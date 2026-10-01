@@ -59,23 +59,25 @@ with a validation error if either one is missing.
 
 ### Creating the Secrets
 
-Secret values are always entered on the Secret objects themselves. The Config page only selects an
-existing Secrets Group.
+Secret values are always entered on the Secret objects themselves. The connection settings (Remote
+URL, Secrets Group, Verify SSL, Timeout) live on the [External Integration][nb-extint] and are edited
+under **Extensibility → External Integrations**, which requires permission to change External
+Integrations. The Config page only selects an existing External Integration, as the vSphere and
+Infoblox integrations do.
 
 **With `proxmox_create_default_secrets=True` (default):**
 
 1. Edit the two default Secrets so they resolve to the Token ID and token secret.
-2. Open the `ProxmoxConfigDefault` config under **Apps → Single Source of Truth → Proxmox VE
-   Config**.
-3. Set **Secrets Group**, **Remote URL**, **Verify SSL**, and **Timeout**. These values are saved to
-   the `DefaultProxmoxInstance` External Integration.
+2. Open the `DefaultProxmoxInstance` External Integration under **Extensibility → External
+   Integrations** and set **Remote URL**, **Verify SSL**, and **Timeout**. It already uses the
+   default Secrets Group.
 
 **With `proxmox_create_default_secrets=False`:**
 
 1. Create two Secrets for the Token ID and token secret.
 2. Create a Secrets Group with the associations listed above.
-3. Create an External Integration and an `SSOTProxmoxConfig` that references it. Remote URL, Verify
-   SSL, Timeout, and Secrets Group can then be set on the Config page as described above.
+3. Create an External Integration with the Remote URL, Verify SSL, Timeout, and that Secrets Group.
+4. Create an `SSOTProxmoxConfig` and select the External Integration.
 
 The SSoT tag, custom fields, relationship, statuses, and node Manufacturer/DeviceType/Role are
 created in both cases. The default Location (`Proxmox VE Default Location`) is only created when
