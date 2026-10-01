@@ -57,3 +57,17 @@ def get_ssot_tag_name(config) -> str:
         str: The tag name to use for SSoT-synced objects.
     """
     return getattr(getattr(config, "default_ssot_tag", None), "name", None) or SSOT_TAG_NAME
+
+
+def get_vlan_group_name(config) -> str:
+    """Return the name of the VLAN Group that holds this config's VLANs.
+
+    Each config gets its own group, so VLAN IDs reused across Proxmox VE instances stay separate.
+
+    Args:
+        config (SSOTProxmoxConfig): The integration configuration object.
+
+    Returns:
+        str: The configured ``vlan_group``'s name, or the config's name when none is set.
+    """
+    return getattr(getattr(config, "vlan_group", None), "name", None) or config.name

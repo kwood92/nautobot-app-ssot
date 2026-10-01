@@ -4,6 +4,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from diffsync.exceptions import ObjectNotFound
+
 from nautobot_ssot.integrations.proxmox.diffsync.adapters.adapter_proxmox import (
     ProxmoxDiffSync,
     bytes_to_gb,
@@ -22,6 +24,9 @@ def _default_config():
         SimpleNamespace: Object with the attributes the adapter reads.
     """
     return SimpleNamespace(
+        name="Proxmox Test Config",
+        sync_vlans=True,
+        vlan_group=None,
         use_clusters=True,
         sync_lxc=True,
         sync_nodes_as_devices=True,
@@ -41,29 +46,61 @@ def _default_config():
     )
 
 
+def _load_fixture_adapter():
+    """Load an adapter from the JSON fixtures through a mocked client.
+
+    Returns:
+        tuple: The mocked client and the loaded ``ProxmoxDiffSync``.
+    """
+    client = MagicMock()
+    client.get_cluster_status.return_value = json_fixture(f"{real_path}/cluster_status.json")
+    client.get_nodes.return_value = json_fixture(f"{real_path}/nodes.json")
+    client.get_resources.return_value = json_fixture(f"{real_path}/resources_vm.json")
+    client.get_qemu_config.return_value = json_fixture(f"{real_path}/qemu_config.json")
+    client.get_qemu_agent_interfaces.return_value = json_fixture(f"{real_path}/qemu_agent_interfaces.json")
+    client.get_lxc_config.return_value = json_fixture(f"{real_path}/lxc_config.json")
+    client.get_node_network.return_value = json_fixture(f"{real_path}/node_network.json")
+    client.get_node_status.return_value = json_fixture(f"{real_path}/node_status.json")
+    adapter = ProxmoxDiffSync(
+        job=MagicMock(), sync=MagicMock(), client=client, config=_default_config(), cluster_filters=None
+    )
+    adapter.load()
+    return client, adapter
+
+
+def _load_single_qemu_vm(qemu_config, agent_interfaces=None, config=None, node_network=None):
+    """Load an adapter whose only VM is the QEMU VM ``web01`` with the given config.
+
+    Args:
+        qemu_config (dict): The QEMU VM config returned by the client.
+        agent_interfaces (list): Guest agent interfaces; empty means the agent is unavailable.
+        config (SimpleNamespace): Stand-in SSOTProxmoxConfig; defaults to ``_default_config()``.
+        node_network (list): Node network entries returned for every node.
+
+    Returns:
+        ProxmoxDiffSync: The loaded adapter.
+    """
+    client = MagicMock()
+    client.get_cluster_status.return_value = json_fixture(f"{real_path}/cluster_status.json")
+    client.get_nodes.return_value = json_fixture(f"{real_path}/nodes.json")
+    client.get_resources.return_value = [json_fixture(f"{real_path}/resources_vm.json")[0]]
+    client.get_qemu_config.return_value = qemu_config
+    client.get_qemu_agent_interfaces.return_value = agent_interfaces or []
+    client.get_node_network.return_value = node_network or []
+    client.get_node_status.return_value = {}
+    adapter = ProxmoxDiffSync(
+        job=MagicMock(), sync=MagicMock(), client=client, config=config or _default_config(), cluster_filters=None
+    )
+    adapter.load()
+    return adapter
+
+
 class TestProxmoxAdapter(unittest.TestCase):
     """Test cases for ProxmoxDiffSync source loading."""
 
     def setUp(self):
         """Load the adapter from JSON fixtures through a mocked client."""
-        self.client = MagicMock()
-        self.client.get_cluster_status.return_value = json_fixture(f"{real_path}/cluster_status.json")
-        self.client.get_nodes.return_value = json_fixture(f"{real_path}/nodes.json")
-        self.client.get_resources.return_value = json_fixture(f"{real_path}/resources_vm.json")
-        self.client.get_qemu_config.return_value = json_fixture(f"{real_path}/qemu_config.json")
-        self.client.get_qemu_agent_interfaces.return_value = json_fixture(f"{real_path}/qemu_agent_interfaces.json")
-        self.client.get_lxc_config.return_value = json_fixture(f"{real_path}/lxc_config.json")
-        self.client.get_node_network.return_value = json_fixture(f"{real_path}/node_network.json")
-        self.client.get_node_status.return_value = json_fixture(f"{real_path}/node_status.json")
-
-        self.adapter = ProxmoxDiffSync(
-            job=MagicMock(),
-            sync=MagicMock(),
-            client=self.client,
-            config=_default_config(),
-            cluster_filters=None,
-        )
-        self.adapter.load()
+        self.client, self.adapter = _load_fixture_adapter()
 
     def test_cluster_and_group_loaded(self):
         """The cluster and its default ClusterGroup are loaded."""
@@ -301,6 +338,165 @@ class TestProxmoxAdapter(unittest.TestCase):
         adapter.load_clusters()
         self.assertEqual(adapter.cluster_name, config.default_cluster_name)
         self.assertIsNotNone(adapter.get("cluster", config.default_cluster_name))
+
+
+class TestProxmoxAdapterVLANs(unittest.TestCase):
+    """VLANs from VM/container ``netN`` settings and node VLAN interfaces."""
+
+    def setUp(self):
+        """Load the adapter from JSON fixtures through a mocked client."""
+        self.client, self.adapter = _load_fixture_adapter()
+
+    def test_qemu_tag_gives_access_mode_and_untagged_vlan(self):
+        """A QEMU netN with tag=10 is an access interface on VLAN 10 in the config's VLAN group."""
+        interface = self.adapter.get("interface", {"name": "net0", "virtual_machine__name": "web01"})
+        self.assertEqual(interface.mode, "access")
+        self.assertEqual(interface.untagged_vlan__vid, 10)
+        self.assertEqual(interface.untagged_vlan__vlan_group__name, "Proxmox Test Config")
+        self.assertTrue(self.adapter.get("vlan", {"vid": 10, "vlan_group__name": "Proxmox Test Config"}))
+
+    def test_qemu_trunks_give_tagged_mode(self):
+        """trunks=20;30 with tag=10 is a tagged interface: VLANs 20 and 30 tagged, 10 untagged."""
+        adapter = _load_single_qemu_vm({"net0": "virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0,tag=10,trunks=20;30"})
+
+        interface = adapter.get("interface", {"name": "net0", "virtual_machine__name": "web01"})
+        self.assertEqual(interface.mode, "tagged")
+        self.assertEqual(interface.untagged_vlan__vid, 10)
+        self.assertEqual(
+            interface.tagged_vlans,
+            [
+                {"vid": 20, "vlan_group__name": "Proxmox Test Config"},
+                {"vid": 30, "vlan_group__name": "Proxmox Test Config"},
+            ],
+        )
+
+    def test_lxc_tag_gives_access_mode(self):
+        """An LXC netN with tag= is handled like a QEMU one."""
+        self.client.get_lxc_config.return_value = {
+            "net0": "name=eth0,bridge=vmbr0,hwaddr=AA:BB:CC:DD:EE:02,ip=10.0.20.10/24,tag=40,type=veth"
+        }
+        adapter = ProxmoxDiffSync(
+            job=MagicMock(), sync=MagicMock(), client=self.client, config=_default_config(), cluster_filters=None
+        )
+        adapter.load()
+
+        interface = adapter.get("interface", {"name": "eth0", "virtual_machine__name": "ct-dns"})
+        self.assertEqual((interface.mode, interface.untagged_vlan__vid), ("access", 40))
+
+    def test_sync_vlans_off_records_no_vlans(self):
+        """With sync_vlans off, no VLANs are loaded and interfaces carry no VLAN settings."""
+        config = _default_config()
+        config.sync_vlans = False
+        adapter = _load_single_qemu_vm(
+            {"net0": "virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0,tag=10,trunks=20"}, config=config
+        )
+
+        interface = adapter.get("interface", {"name": "net0", "virtual_machine__name": "web01"})
+        self.assertEqual((interface.mode, interface.untagged_vlan__vid, interface.tagged_vlans), ("", None, []))
+        self.assertEqual(adapter.get_all("vlan"), [])
+        self.assertEqual(adapter.get_all("vlangroup"), [])
+
+    def test_node_vlan_interface_gets_its_vlan(self):
+        """A node vlan interface is an access interface on its VLAN, from vlan-id or a name.vid suffix."""
+        adapter = _load_single_qemu_vm(
+            {},
+            node_network=[
+                {"iface": "eth0", "type": "eth", "active": 1},
+                {"iface": "vlan50", "type": "vlan", "active": 1, "vlan-id": 50, "vlan-raw-device": "eth0"},
+                {"iface": "eth0.60", "type": "vlan", "active": 1},
+            ],
+        )
+
+        for name, vid in (("vlan50", 50), ("eth0.60", 60)):
+            interface = adapter.get("device_interface", {"name": name, "device__name": "pve1"})
+            self.assertEqual((interface.mode, interface.untagged_vlan__vid), ("access", vid))
+            self.assertEqual(interface.untagged_vlan__vlan_group__name, "Proxmox Test Config")
+        plain = adapter.get("device_interface", {"name": "eth0", "device__name": "pve1"})
+        self.assertEqual((plain.mode, plain.untagged_vlan__vid), ("", None))
+
+
+class TestProxmoxAdapterCloudInit(unittest.TestCase):
+    """QEMU VM addresses from Proxmox VE cloud-init settings (``ipconfigN``)."""
+
+    def _load(self, qemu_config, agent_interfaces=None):
+        """Load an adapter whose only VM is ``web01`` with the given QEMU config.
+
+        Args:
+            qemu_config (dict): The QEMU VM config returned by the client.
+            agent_interfaces (list): Guest agent interfaces; empty means the agent is unavailable.
+
+        Returns:
+            ProxmoxDiffSync: The loaded adapter.
+        """
+        return _load_single_qemu_vm(qemu_config, agent_interfaces)
+
+    def test_cloudinit_address_used_without_agent(self):
+        """With no guest agent data, ipconfig0's address is put on net0 and used as the primary IPv4."""
+        adapter = self._load(
+            {"net0": "virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0", "ipconfig0": "ip=10.0.10.60/24,gw=10.0.10.1"}
+        )
+
+        ip = adapter.get("ip_address", "10.0.10.60__24__Active")
+        self.assertEqual(ip.vm_interfaces, [{"name": "net0", "virtual_machine__name": "web01"}])
+        vm = adapter.get("virtual_machine", {"name": "web01", "cluster__name": "pve-cluster"})
+        self.assertEqual(vm.primary_ip4__host, "10.0.10.60")
+
+    def test_agent_addresses_take_precedence(self):
+        """When the guest agent reports addresses for an interface, ipconfigN isn't used for it."""
+        adapter = self._load(
+            {"net0": "virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0", "ipconfig0": "ip=10.0.10.60/24"},
+            agent_interfaces=json_fixture(f"{real_path}/qemu_agent_interfaces.json"),
+        )
+
+        self.assertTrue(adapter.get("ip_address", "10.0.10.50__24__Active"))
+        with self.assertRaises(ObjectNotFound):
+            adapter.get("ip_address", "10.0.10.60__24__Active")
+
+    def test_ipconfig_maps_to_matching_net_index(self):
+        """ipconfig1 belongs to net1; an ipconfigN without a netN is ignored."""
+        adapter = self._load(
+            {
+                "net0": "virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0",
+                "net1": "virtio=AA:BB:CC:DD:EE:03,bridge=vmbr1",
+                "ipconfig1": "ip=192.0.2.10/24",
+                "ipconfig5": "ip=198.51.100.10/24",
+            }
+        )
+
+        ip = adapter.get("ip_address", "192.0.2.10__24__Active")
+        self.assertEqual(ip.vm_interfaces, [{"name": "net1", "virtual_machine__name": "web01"}])
+        with self.assertRaises(ObjectNotFound):
+            adapter.get("ip_address", "198.51.100.10__24__Active")
+
+    def test_dynamic_settings_record_nothing_and_static_ipv6_is_recorded(self):
+        """ip=dhcp and ip6=auto give no address; a static ip6 is recorded."""
+        adapter = self._load(
+            {
+                "net0": "virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0",
+                "net1": "virtio=AA:BB:CC:DD:EE:03,bridge=vmbr1",
+                "ipconfig0": "ip=dhcp,ip6=auto",
+                "ipconfig1": "ip6=2001:db8::10/64",
+            }
+        )
+
+        self.assertEqual([ip.host for ip in adapter.get_all("ip_address")], ["2001:db8::10"])
+
+    def test_cloudinit_credentials_are_never_read(self):
+        """ciuser, cipassword and sshkeys from the same config never reach synced data or the job log."""
+        secrets = ("ci-user-marker", "ci-password-marker", "ssh-key-marker")
+        adapter = self._load(
+            {
+                "net0": "virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0",
+                "ipconfig0": "ip=10.0.10.60/24",
+                "ciuser": secrets[0],
+                "cipassword": secrets[1],
+                "sshkeys": secrets[2],
+            }
+        )
+
+        synced = repr(adapter.dict()) + repr(adapter.job.mock_calls)
+        for value in secrets:
+            self.assertNotIn(value, synced)
 
 
 class TestProxmoxHelpers(unittest.TestCase):

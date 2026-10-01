@@ -1,0 +1,1 @@
+Proxmox VE: VLANs are now synced from VM/container interface tag/trunks settings and node VLAN interfaces into a VLAN Group per config, with interface modes and VLAN assignments; controlled by the new Sync VLANs and VLAN Group config fields.

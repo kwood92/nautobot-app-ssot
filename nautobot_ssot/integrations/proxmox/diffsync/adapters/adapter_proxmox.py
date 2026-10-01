@@ -5,7 +5,7 @@
 #  pylint: disable=too-many-locals
 import ipaddress
 import re
-from typing import Callable, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 from diffsync import Adapter
 from nautobot.dcim.choices import InterfaceTypeChoices
@@ -16,6 +16,7 @@ from nautobot_ssot.integrations.proxmox.constants import (
     NETWORK_PREFIX_TYPE,
     NODE_INTERFACE_TYPE_MAP,
     get_ssot_tag_name,
+    get_vlan_group_name,
 )
 from nautobot_ssot.integrations.proxmox.diffsync.models.proxmox import (
     ClusterGroupModel,
@@ -26,10 +27,14 @@ from nautobot_ssot.integrations.proxmox.diffsync.models.proxmox import (
     PrefixModel,
     TagModel,
     VirtualMachineModel,
+    VLANGroupModel,
+    VLANModel,
     VMInterfaceModel,
 )
 
 MAC_RE = re.compile(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")
+# Node VLAN interface names: "<parent>.<vid>" (e.g. vmbr0.10) or "vlan<vid>" (e.g. vlan10).
+NODE_VLAN_NAME_RE = re.compile(r"^(?:.+\.(?P<dotted>\d+)|vlan(?P<named>\d+))$")
 
 
 def create_ipaddr(address: str) -> Union[ipaddress.IPv4Address, ipaddress.IPv6Address]:
@@ -66,6 +71,28 @@ def parse_net_config(net_string: str) -> Dict[str, str]:
             key, value = item.split("=", 1)
             parts[key.strip()] = value.strip()
     return parts
+
+
+def static_ip_pairs(parts: Dict[str, str]) -> List[Tuple[str, int]]:
+    """Return the statically configured addresses from parsed ``ip=``/``ip6=`` settings.
+
+    Used for LXC ``netN`` and QEMU cloud-init ``ipconfigN`` values. ``dhcp``, ``auto``, ``manual``
+    and values without a prefix length yield nothing.
+
+    Args:
+        parts (dict): The parsed key/value pairs from :func:`parse_net_config`.
+
+    Returns:
+        List[Tuple[str, int]]: ``(host, prefix_length)`` pairs.
+    """
+    pairs = []
+    for ip_key in ("ip", "ip6"):
+        cidr = parts.get(ip_key)
+        if not cidr or cidr in ("dhcp", "manual", "auto") or "/" not in cidr:
+            continue
+        host, _, prefix_length = cidr.partition("/")
+        pairs.append((host, int(prefix_length)))
+    return pairs
 
 
 def mac_from_net_parts(parts: Dict[str, str]) -> Optional[str]:
@@ -119,10 +146,13 @@ class ProxmoxDiffSync(Adapter):
     device_interface = DeviceInterfaceModel
     virtual_machine = VirtualMachineModel
     interface = VMInterfaceModel
+    vlangroup = VLANGroupModel
+    vlan = VLANModel
     ip_address = IPAddressModel
     prefix = PrefixModel
 
-    top_level = ["tag", "prefix", "clustergroup", "device", "virtual_machine", "ip_address"]
+    # VLAN Groups (with their VLANs) come before the interfaces that reference them.
+    top_level = ["tag", "prefix", "vlangroup", "clustergroup", "device", "virtual_machine", "ip_address"]
 
     def __init__(self, *args, job=None, sync=None, client, config, cluster_filters, **kwargs):
         """Initialize the ProxmoxDiffSync.
@@ -246,6 +276,7 @@ class ProxmoxDiffSync(Adapter):
                     "bridge__name": member_bridge.get(iface_name),
                     "lag__name": member_lag.get(iface_name),
                     "parent_interface__name": member_parent.get(iface_name),
+                    **self._node_interface_vlan_attrs(entry),
                 },
             )
             diffsync_device.add_child(diffsync_interface)
@@ -385,13 +416,86 @@ class ProxmoxDiffSync(Adapter):
             vm_config = self.client.get_lxc_config(node, vmid)
             self._load_lxc_interfaces(vm_config, diffsync_vm)
 
-    def _instantiate_interface(self, name: str, mac: Optional[str], diffsync_vm: VirtualMachineModel):
+    def _node_interface_vlan_attrs(self, entry: dict) -> Dict[str, Any]:
+        """Return a node VLAN interface's mode and untagged VLAN.
+
+        The VLAN ID comes from ``vlan-id``, else a ``<parent>.<vid>`` or ``vlan<vid>`` name.
+
+        Args:
+            entry (dict): The ``/nodes/{node}/network`` entry.
+
+        Returns:
+            dict: ``mode`` and ``untagged_vlan__*`` attributes; empty for non-VLAN interfaces, when the
+            VLAN ID can't be determined, or when VLAN syncing is off.
+        """
+        if not self.config.sync_vlans or entry.get("type") != "vlan":
+            return {}
+        vid = entry.get("vlan-id")
+        if vid is None:
+            match = NODE_VLAN_NAME_RE.match(entry.get("iface") or "")
+            vid = match and (match.group("dotted") or match.group("named"))
+        if not vid:
+            return {}
+        untagged = self._vlan_ref(int(vid))
+        return {
+            "mode": "access",
+            "untagged_vlan__vid": untagged["vid"],
+            "untagged_vlan__vlan_group__name": untagged["vlan_group__name"],
+        }
+
+    def _vlan_ref(self, vid: int) -> Dict[str, Any]:
+        """Record a VLAN in the config's VLAN Group and return a reference to it.
+
+        Args:
+            vid (int): The VLAN ID.
+
+        Returns:
+            dict: ``{"vid": ..., "vlan_group__name": ...}`` identifying the VLAN.
+        """
+        group_name = get_vlan_group_name(self.config)
+        diffsync_group, _ = self.get_or_instantiate(self.vlangroup, {"name": group_name})
+        diffsync_vlan, created = self.get_or_instantiate(
+            self.vlan, {"vid": vid, "vlan_group__name": group_name}, {"status__name": ACTIVE_STATUS_NAME}
+        )
+        if created:
+            diffsync_group.add_child(diffsync_vlan)
+        return {"vid": vid, "vlan_group__name": group_name}
+
+    def _interface_vlan_attrs(self, parts: Dict[str, str]) -> Dict[str, Any]:
+        """Return a VM interface's mode and VLANs from its ``netN`` ``tag=``/``trunks=`` settings.
+
+        Args:
+            parts (dict): The parsed ``netN`` settings.
+
+        Returns:
+            dict: ``mode``, ``untagged_vlan__*`` and ``tagged_vlans`` attributes; empty when VLAN
+            syncing is off or the interface has no VLAN settings.
+        """
+        if not self.config.sync_vlans:
+            return {}
+        tag = parts.get("tag")
+        trunks = [int(vid) for vid in (parts.get("trunks") or "").split(";") if vid.strip()]
+        if not tag and not trunks:
+            return {}
+        attrs = {"mode": "tagged" if trunks else "access"}
+        if tag:
+            untagged = self._vlan_ref(int(tag))
+            attrs["untagged_vlan__vid"] = untagged["vid"]
+            attrs["untagged_vlan__vlan_group__name"] = untagged["vlan_group__name"]
+        if trunks:
+            attrs["tagged_vlans"] = [self._vlan_ref(vid) for vid in sorted(trunks)]
+        return attrs
+
+    def _instantiate_interface(
+        self, name: str, mac: Optional[str], diffsync_vm: VirtualMachineModel, parts: Optional[Dict[str, str]] = None
+    ):
         """Create/get a VMInterface DiffSync model and attach it to the VM.
 
         Args:
             name (str): The interface name.
             mac (Optional[str]): The interface's MAC address, if known.
             diffsync_vm (VirtualMachineModel): The VM DiffSync model to attach the interface to.
+            parts (Optional[dict]): The parsed ``netN`` settings, for the interface's VLANs.
 
         Returns:
             VMInterfaceModel: The created/existing VMInterface DiffSync model.
@@ -403,6 +507,7 @@ class ProxmoxDiffSync(Adapter):
                 "enabled": True,
                 "status__name": ACTIVE_STATUS_NAME,
                 "mac_address": mac.upper() if mac else None,
+                **self._interface_vlan_attrs(parts or {}),
             },
         )
         diffsync_vm.add_child(diffsync_interface)
@@ -430,7 +535,7 @@ class ProxmoxDiffSync(Adapter):
                 continue
             parts = parse_net_config(value)
             mac = mac_from_net_parts(parts)
-            diffsync_interface = self._instantiate_interface(get_name(key, parts), mac, diffsync_vm)
+            diffsync_interface = self._instantiate_interface(get_name(key, parts), mac, diffsync_vm, parts)
             assignment = {"name": diffsync_interface.name, "virtual_machine__name": diffsync_vm.name}
 
             for host, prefix_length in get_ip_pairs(key, parts, mac):
@@ -445,6 +550,9 @@ class ProxmoxDiffSync(Adapter):
     ) -> None:
         """Load QEMU VM interfaces from config, with IPs from the guest agent matched by MAC.
 
+        Interfaces the agent reports no addresses for (VM stopped, no agent, or no permission to read
+        it) fall back to the matching cloud-init ``ipconfigN`` setting (``ipconfig0`` for ``net0``).
+
         Args:
             vm_config (dict): The VM's Proxmox QEMU config, as returned by the client.
             agent_interfaces (List[dict]): Interfaces reported by the QEMU guest agent.
@@ -458,10 +566,15 @@ class ProxmoxDiffSync(Adapter):
 
         def qemu_ip_pairs(key, parts, mac):  # pylint: disable=unused-argument
             agent_iface = agent_by_mac.get(mac.lower()) if mac else None
-            if not agent_iface:
-                return
-            for ip_entry in agent_iface.get("ip-addresses", []) or []:
-                yield ip_entry.get("ip-address"), ip_entry.get("prefix")
+            agent_pairs = [
+                (ip_entry.get("ip-address"), ip_entry.get("prefix"))
+                for ip_entry in (agent_iface or {}).get("ip-addresses", []) or []
+            ]
+            if agent_pairs:
+                return agent_pairs
+            # Only the addresses are read from ipconfigN; the config's ciuser/cipassword/sshkeys never are.
+            cloudinit = vm_config.get(f"ipconfig{key[len('net'):]}")
+            return static_ip_pairs(parse_net_config(cloudinit)) if isinstance(cloudinit, str) else []
 
         self._load_vm_interfaces_from_config(
             vm_config, diffsync_vm, get_name=lambda key, parts: key, get_ip_pairs=qemu_ip_pairs
@@ -476,12 +589,7 @@ class ProxmoxDiffSync(Adapter):
         """
 
         def lxc_ip_pairs(key, parts, mac):  # pylint: disable=unused-argument
-            for ip_key in ("ip", "ip6"):
-                cidr = parts.get(ip_key)
-                if not cidr or cidr in ("dhcp", "manual", "auto") or "/" not in cidr:
-                    continue
-                host, _, prefix_length = cidr.partition("/")
-                yield host, int(prefix_length)
+            return static_ip_pairs(parts)
 
         self._load_vm_interfaces_from_config(
             vm_config,

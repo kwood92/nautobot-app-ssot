@@ -17,6 +17,7 @@ The sync calls these read-only REST endpoints (plus the QEMU guest agent and LXC
 | `/nodes/{node}/status` | Node PVE version, CPU count, memory |
 | `/nodes/{node}/network` | Node network interfaces and their IPs |
 | QEMU guest agent | IP addresses of running QEMU VMs (agent must be installed and the VM powered on) |
+| QEMU cloud-init settings (`ipconfigN`) | Static IP addresses of QEMU VMs, for interfaces the agent reports none for |
 | LXC container config | IP addresses of LXC containers |
 
 ## What is created / updated in Nautobot
@@ -36,6 +37,14 @@ The sync calls these read-only REST endpoints (plus the QEMU guest agent and LXC
 | Proxmox VE tags | Nautobot `Tag`s on the VirtualMachine — when *Sync Proxmox VE Tags* is enabled |
 | NICs | `VMInterface` |
 | IP addresses | `IPAddress` + the containing `Prefix` |
+| VM / container NIC `tag=` / `trunks=` | `VLAN`s in the config's VLAN Group; VMInterface `mode` (`access` for `tag` only, `tagged` with `trunks`), `untagged_vlan`, `tagged_vlans` — when *Sync VLANs* is enabled |
+| Node VLAN interface (`vlan-id`, or a `<parent>.<vid>` / `vlan<vid>` name) | `VLAN` in the config's VLAN Group; DCIM Interface `mode` `access` with that `untagged_vlan` — when *Sync VLANs* is enabled |
+
+VLANs are created in one VLAN Group per config: the config's *VLAN Group*, or a group named after
+the config when none is set. Keeping each Proxmox VE instance in its own group means a VLAN ID reused
+on two instances becomes two Nautobot VLANs. New VLANs are named `VLAN <vid>`; a name changed in
+Nautobot is kept. VLANs and VLAN Groups are never deleted by a sync. With *Sync VLANs* off, interface
+modes and VLANs in Nautobot are left as they are.
 
 Nautobot's `VirtualMachine` has no host Device field, so each VM is linked to its Proxmox node
 through the "Proxmox VM Host" relationship (Device → VirtualMachine).
@@ -90,9 +99,13 @@ The sync is idempotent. Each run brings Nautobot in line with Proxmox:
 ## Limitations
 
 - **One-way sync.** Data flows from Proxmox VE to Nautobot only.
-- **QEMU VM IPs require the guest agent.** QEMU VM IP addresses come from the QEMU guest agent, so
-  they are only reported for running VMs with the agent installed. VMs without a reachable agent are
-  synced without IPs. LXC container IPs come from the container config and do not need an agent.
+- **QEMU VM IPs come from the guest agent, then cloud-init.** The guest agent's addresses are used
+  when it reports any for an interface (running VM, agent installed, token allowed to read it).
+  Otherwise the interface's cloud-init setting is used (`ipconfig0` for `net0`): only static
+  `ip=`/`ip6=` addresses, not `dhcp` or `auto`. Cloud-init addresses are the configured ones applied at
+  boot, so a change made inside the guest isn't seen unless the agent is readable. VMs with neither
+  sync without IPs. Only the addresses are read from the cloud-init settings, never the user, password
+  or SSH keys. LXC container IPs come from the container config and do not need an agent.
 - **Some objects are not deleted.** `Prefix`, `IPAddress`, `Device` (nodes), `Cluster`,
   `ClusterGroup`, and `Tag` remain in Nautobot after they are removed from Proxmox and must be cleaned up
   manually.
@@ -108,6 +121,8 @@ The sync is idempotent. Each run brings Nautobot in line with Proxmox:
 - **Resource values are rounded down.** Memory is stored in whole MB and disk in whole GB, so very
   small values may display as `0`.
 - **Token authentication only.** Username/password login is not supported.
+- **VLAN-aware bridges aren't read.** The `bridge_vids` of VLAN-aware node bridges aren't synced as
+  tagged VLANs; only VM/container `tag=`/`trunks=` and node `vlan` interfaces are.
 - **Names must not collide across instances.** Nautobot requires Virtual Machine names to be unique
   within a cluster and node Device names to be unique within a location. If two Proxmox VE instances
   report the same name in the same cluster or location, the second config's create fails (logged in

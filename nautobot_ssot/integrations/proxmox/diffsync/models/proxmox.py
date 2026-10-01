@@ -8,7 +8,7 @@ from django.contrib.contenttypes.models import ContentType
 from nautobot.core.choices import ColorChoices
 from nautobot.dcim.models import Device, Interface
 from nautobot.extras.models.tags import Tag
-from nautobot.ipam.models import IPAddress, Prefix
+from nautobot.ipam.models import VLAN, IPAddress, Prefix, VLANGroup
 from nautobot.virtualization.models import (
     Cluster,
     ClusterGroup,
@@ -30,8 +30,16 @@ from nautobot_ssot.integrations.proxmox.constants import (
     NODE_MEMORY_GB_CF,
     NODE_PVE_VERSION_CF,
     SSOT_CUSTOM_FIELD_KEY,
+    get_vlan_group_name,
 )
 from nautobot_ssot.integrations.proxmox.diffsync.models.base import ProxmoxModelDiffSync, owned_by_config_or_unowned
+
+
+class VLANDict(TypedDict):
+    """Typed dict identifying a VLAN within a VLAN Group."""
+
+    vid: int
+    vlan_group__name: str
 
 
 class InterfacesDict(TypedDict):
@@ -124,13 +132,26 @@ class VMInterfaceModel(ProxmoxModelDiffSync):
     _model = VMInterface
     _modelname = "interface"
     _identifiers = ("name", "virtual_machine__name")
-    _attributes = ("enabled", "mac_address", "status__name")
+    _attributes = (
+        "enabled",
+        "mac_address",
+        "status__name",
+        "mode",
+        "untagged_vlan__vid",
+        "untagged_vlan__vlan_group__name",
+        "tagged_vlans",
+    )
 
     name: str
     virtual_machine__name: str
     enabled: bool
     status__name: str
     mac_address: Optional[str] = None
+    # Nautobot stores "no mode" as an empty string.
+    mode: str = ""
+    untagged_vlan__vid: Optional[int] = None
+    untagged_vlan__vlan_group__name: Optional[str] = None
+    tagged_vlans: List[VLANDict] = []
 
 
 class DeviceInterfaceModel(ProxmoxModelDiffSync):
@@ -141,7 +162,18 @@ class DeviceInterfaceModel(ProxmoxModelDiffSync):
     _model = Interface
     _modelname = "device_interface"
     _identifiers = ("name", "device__name")
-    _attributes = ("type", "enabled", "status__name", "mtu", "bridge__name", "lag__name", "parent_interface__name")
+    _attributes = (
+        "type",
+        "enabled",
+        "status__name",
+        "mtu",
+        "bridge__name",
+        "lag__name",
+        "parent_interface__name",
+        "mode",
+        "untagged_vlan__vid",
+        "untagged_vlan__vlan_group__name",
+    )
 
     name: str
     device__name: str
@@ -154,6 +186,10 @@ class DeviceInterfaceModel(ProxmoxModelDiffSync):
     bridge__name: Optional[str] = None
     lag__name: Optional[str] = None
     parent_interface__name: Optional[str] = None
+    # Nautobot stores "no mode" as an empty string.
+    mode: str = ""
+    untagged_vlan__vid: Optional[int] = None
+    untagged_vlan__vlan_group__name: Optional[str] = None
 
     @classmethod
     def create(cls, adapter, ids, attrs):
@@ -453,6 +489,63 @@ class ClusterGroupModel(ProxmoxModelDiffSync):
 
     name: str
     clusters: Optional[List[ClusterModel]] = list()
+
+
+class VLANModel(ProxmoxModelDiffSync):
+    """VLAN model, keyed by VLAN ID within the config's VLAN Group."""
+
+    # VLANs are shared IPAM records, so this integration creates them but never deletes them.
+    model_flags: DiffSyncModelFlags = DiffSyncModelFlags.SKIP_UNMATCHED_DST
+
+    _model = VLAN
+    _modelname = "vlan"
+    _identifiers = ("vid", "vlan_group__name")
+    _attributes = ("status__name",)
+
+    vid: int
+    vlan_group__name: str
+    status__name: str
+
+    @classmethod
+    def _update_obj_with_parameters(cls, obj, parameters, adapter):
+        """Name a new VLAN after its ID; a name edited in Nautobot is never overwritten.
+
+        Args:
+            obj (VLAN): The Nautobot VLAN being created or updated.
+            parameters (dict[str, Any]): The parameters to update the object with.
+            adapter (Adapter): The adapter used to look up related objects in the cache.
+        """
+        if not obj.name:
+            obj.name = f"VLAN {parameters.get('vid', obj.vid)}"
+        super()._update_obj_with_parameters(obj, parameters, adapter)
+
+
+class VLANGroupModel(ProxmoxModelDiffSync):
+    """VLAN Group model: one per config, holding that config's VLANs."""
+
+    model_flags: DiffSyncModelFlags = DiffSyncModelFlags.SKIP_UNMATCHED_DST
+
+    _model = VLANGroup
+    _modelname = "vlangroup"
+    _identifiers = ("name",)
+    _attributes = ()
+    _children = {"vlan": "vlans"}
+
+    name: str
+    vlans: List[VLANModel] = []
+
+    @classmethod
+    def get_queryset(cls, config, cluster_filters):  # pylint: disable=unused-argument
+        """Only load this config's VLAN Group (its VLANs are loaded as children).
+
+        Args:
+            config (SSOTProxmoxConfig): The integration configuration object.
+            cluster_filters (QuerySet): Clusters the sync is scoped to, or an empty value for all.
+
+        Returns:
+            QuerySet: The VLAN Group queryset to load.
+        """
+        return cls._model.objects.filter(name=get_vlan_group_name(config))
 
 
 class TagModel(ProxmoxModelDiffSync):
