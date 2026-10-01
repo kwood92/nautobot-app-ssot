@@ -457,6 +457,10 @@ class ClusterGroupModel(ProxmoxModelDiffSync):
 class TagModel(ProxmoxModelDiffSync):
     """Tag DiffSync model."""
 
+    # Tags are shared across Nautobot (other integrations, manual use) and deleting one strips it
+    # from every object, so this integration creates and updates Tags but never deletes them.
+    model_flags: DiffSyncModelFlags = DiffSyncModelFlags.SKIP_UNMATCHED_DST
+
     _model = Tag
     _modelname = "tag"
     _identifiers = ("name",)
@@ -507,16 +511,12 @@ class TagModel(ProxmoxModelDiffSync):
         return super(NautobotModel, self).update(attrs)
 
     def delete(self):
-        """Delete a Tag in Nautobot.
+        """Drop the Tag from the sync's working set without deleting it from Nautobot.
+
+        ``SKIP_UNMATCHED_DST`` already keeps Tags out of the delete path; this guards against that
+        flag being changed, since deleting a Tag strips it from every object in Nautobot.
 
         Returns:
-            TagModel: The deleted Tag model, or None if the Tag was not found.
+            TagModel: This model.
         """
-        self.adapter.job.logger.debug(f"Delete Tag: {self.name}")
-        try:
-            _tag = Tag.objects.get(name=self.name)
-            super().delete()
-            _tag.delete()
-            return self
-        except Tag.DoesNotExist as err:
-            self.adapter.job.logger.warning(f"Unable to find Tag {self.name} for deletion. {err}")
+        return super(NautobotModel, self).delete()

@@ -109,6 +109,23 @@ class TestProxmoxDiffSyncModelsCreate(ProxmoxSyncTestMixin, TestCase):
             ).exists()
         )
 
+    def test_vm_gets_existing_tag_not_yet_enabled_for_vms(self):
+        """A VM can carry a Proxmox tag that already exists in Nautobot without the VM content type."""
+        existing = Tag.objects.create(name="shared-tag")
+        existing.content_types.add(ContentType.objects.get_for_model(Device))
+        self._seed_cluster(self.source)
+        vm = self.source.virtual_machine(
+            **_get_virtual_machine_dict({"name": "web01", "tags": [{"name": SSOT_TAG_NAME}, {"name": "shared-tag"}]})
+        )
+        self.source.add(self.source.tag(name="shared-tag", description=""))
+        self.source.add(vm)
+        self.source.sync_to(self._nb_adapter())
+
+        nb_vm = VirtualMachine.objects.get(name="web01")
+        self.assertIn("shared-tag", [tag.name for tag in nb_vm.tags.all()])
+        # The tag's existing content types are kept.
+        self.assertIn(ContentType.objects.get_for_model(Device), Tag.objects.get(name="shared-tag").content_types.all())
+
     def test_vm_creation_with_interface_ip_and_primary(self):
         """A VM interface IP, its Prefix and the VM's primary IP are created."""
         self._seed_cluster(self.source)

@@ -1,0 +1,1 @@
+Fixed the Proxmox VE sync deleting every Nautobot tag not reported by Proxmox VE; the integration now never deletes tags.
