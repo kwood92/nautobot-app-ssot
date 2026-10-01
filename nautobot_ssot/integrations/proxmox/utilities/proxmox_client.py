@@ -5,7 +5,6 @@ import re
 import urllib.parse
 from dataclasses import dataclass
 
-import urllib3
 from proxmoxer import ProxmoxAPI
 from proxmoxer.core import ResourceException
 
@@ -66,9 +65,6 @@ class ProxmoxClient:
         user, _, token_name = config.token_id.partition("!")
         self.user = user
         self.token_name = token_name
-
-        if not self.config.verify_ssl:
-            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
         self.api = ProxmoxAPI(
             self.host,
