@@ -15,6 +15,8 @@ from nautobot.extras.choices import (
 
 from nautobot_ssot.integrations.proxmox.constants import (
     CLUSTER_TYPE_NAME,
+    CONFIG_CUSTOM_FIELD_KEY,
+    CONFIG_CUSTOM_FIELD_LABEL,
     HOST_RELATIONSHIP_KEY,
     HOST_RELATIONSHIP_LABEL,
     NODE_CPU_COUNT_CF,
@@ -41,6 +43,23 @@ def register_signals(sender):
     """
     nautobot_database_ready.connect(nautobot_database_ready_callback, sender=sender)
     nautobot_database_ready.connect(create_default_proxmox_config, sender=sender)
+
+
+def _ensure_custom_field(custom_field_model, cf_type, key, label, content_types):
+    """Create or repair a custom field with the given type and content types.
+
+    Args:
+        custom_field_model (Type[CustomField]): The CustomField model from the app registry.
+        cf_type (str): The required custom field type.
+        key (str): The custom field key.
+        label (str): The label used when creating the field.
+        content_types (Iterable[ContentType]): Content types the field must apply to.
+    """
+    custom_field, _ = custom_field_model.objects.get_or_create(key=key, defaults={"type": cf_type, "label": label})
+    for content_type in content_types:
+        custom_field.content_types.add(content_type)
+    custom_field.type = cf_type
+    custom_field.save()
 
 
 def nautobot_database_ready_callback(sender, *, apps, **kwargs):  # pylint: disable=unused-argument
@@ -95,14 +114,21 @@ def nautobot_database_ready_callback(sender, *, apps, **kwargs):  # pylint: disa
     for content_type in (device_ct, vm_ct, vminterface_ct, ipaddress_ct):
         tag_sync_from_proxmox.content_types.add(content_type)
 
-    custom_field, _ = CustomField.objects.get_or_create(
-        key=SSOT_CUSTOM_FIELD_KEY,
-        defaults={"type": CustomFieldTypeChoices.TYPE_DATE, "label": SSOT_CUSTOM_FIELD_LABEL},
+    custom_fields = (
+        (
+            CustomFieldTypeChoices.TYPE_DATE,
+            SSOT_CUSTOM_FIELD_KEY,
+            SSOT_CUSTOM_FIELD_LABEL,
+            (device_ct, vm_ct, vminterface_ct, ipaddress_ct),
+        ),
+        (CustomFieldTypeChoices.TYPE_TEXT, CONFIG_CUSTOM_FIELD_KEY, CONFIG_CUSTOM_FIELD_LABEL, (device_ct, vm_ct)),
+        # Node hardware/version detail stored on the node Device.
+        (CustomFieldTypeChoices.TYPE_TEXT, NODE_PVE_VERSION_CF, "Proxmox VE Version", (device_ct,)),
+        (CustomFieldTypeChoices.TYPE_INTEGER, NODE_CPU_COUNT_CF, "Proxmox CPU Count", (device_ct,)),
+        (CustomFieldTypeChoices.TYPE_INTEGER, NODE_MEMORY_GB_CF, "Proxmox Memory (GB)", (device_ct,)),
     )
-    for content_type in (device_ct, vm_ct, vminterface_ct, ipaddress_ct):
-        custom_field.content_types.add(content_type)
-    custom_field.type = CustomFieldTypeChoices.TYPE_DATE
-    custom_field.save()
+    for cf_type, cf_key, cf_label, content_types in custom_fields:
+        _ensure_custom_field(CustomField, cf_type, cf_key, cf_label, content_types)
 
     # Links each VM to its host node Device (Nautobot's VirtualMachine has no host-Device FK).
     Relationship = apps.get_model("extras", "Relationship")
@@ -115,21 +141,6 @@ def nautobot_database_ready_callback(sender, *, apps, **kwargs):  # pylint: disa
             "destination_type": vm_ct,
         },
     )
-
-    # Node hardware/version detail stored on the node Device.
-    node_hardware_fields = (
-        (CustomFieldTypeChoices.TYPE_TEXT, NODE_PVE_VERSION_CF, "Proxmox VE Version"),
-        (CustomFieldTypeChoices.TYPE_INTEGER, NODE_CPU_COUNT_CF, "Proxmox CPU Count"),
-        (CustomFieldTypeChoices.TYPE_INTEGER, NODE_MEMORY_GB_CF, "Proxmox Memory (GB)"),
-    )
-    for cf_type, cf_key, cf_label in node_hardware_fields:
-        hardware_cf, _ = CustomField.objects.get_or_create(
-            key=cf_key,
-            defaults={"type": cf_type, "label": cf_label},
-        )
-        hardware_cf.content_types.add(device_ct)
-        hardware_cf.type = cf_type
-        hardware_cf.save()
 
     ClusterType.objects.get_or_create(name=CLUSTER_TYPE_NAME)
 
@@ -216,7 +227,7 @@ def create_default_proxmox_config(sender, *, apps, **kwargs):  # pylint: disable
         defaults={
             "remote_url": "https://replace.me.local:8006",
             "secrets_group": secrets_group,
-            "verify_ssl": False,
+            "verify_ssl": True,
             "timeout": 30,
         },
     )

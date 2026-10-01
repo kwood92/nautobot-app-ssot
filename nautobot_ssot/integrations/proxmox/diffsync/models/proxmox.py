@@ -3,7 +3,6 @@
 import random
 from typing import Annotated, List, Optional
 
-from diffsync import DiffSyncModel
 from diffsync.enum import DiffSyncModelFlags
 from django.contrib.contenttypes.models import ContentType
 from nautobot.core.choices import ColorChoices
@@ -32,7 +31,7 @@ from nautobot_ssot.integrations.proxmox.constants import (
     NODE_PVE_VERSION_CF,
     SSOT_CUSTOM_FIELD_KEY,
 )
-from nautobot_ssot.integrations.proxmox.diffsync.models.base import ProxmoxModelDiffSync
+from nautobot_ssot.integrations.proxmox.diffsync.models.base import ProxmoxModelDiffSync, owned_by_config_or_unowned
 
 
 class InterfacesDict(TypedDict):
@@ -400,11 +399,12 @@ class VirtualMachineModel(ProxmoxModelDiffSync):
         Returns:
             QuerySet: The VirtualMachine queryset to load.
         """
+        queryset = cls._model.objects.filter(
+            owned_by_config_or_unowned(config), _custom_field_data__has_key=SSOT_CUSTOM_FIELD_KEY
+        )
         if cluster_filters:
-            return cls._model.objects.filter(
-                _custom_field_data__has_key=SSOT_CUSTOM_FIELD_KEY, cluster__in=cluster_filters
-            )
-        return cls._model.objects.filter(_custom_field_data__has_key=SSOT_CUSTOM_FIELD_KEY)
+            return queryset.filter(cluster__in=cluster_filters)
+        return queryset
 
 
 class ClusterModel(ProxmoxModelDiffSync):
@@ -458,6 +458,10 @@ class ClusterGroupModel(ProxmoxModelDiffSync):
 class TagModel(ProxmoxModelDiffSync):
     """Tag DiffSync model."""
 
+    # Tags are shared across Nautobot (other integrations, manual use) and deleting one strips it
+    # from every object, so this integration creates and updates Tags but never deletes them.
+    model_flags: DiffSyncModelFlags = DiffSyncModelFlags.SKIP_UNMATCHED_DST
+
     _model = Tag
     _modelname = "tag"
     _identifiers = ("name",)
@@ -489,7 +493,7 @@ class TagModel(ProxmoxModelDiffSync):
         _new_tag.validated_save()
         _new_tag.content_types.set([ContentType.objects.get_for_model(VirtualMachine)])
         _new_tag.validated_save()
-        return DiffSyncModel.create(adapter=adapter, ids=ids, attrs=attrs)
+        return super(NautobotModel, cls).create(adapter=adapter, ids=ids, attrs=attrs)
 
     def update(self, attrs):
         """Update a Tag in Nautobot.
@@ -508,16 +512,12 @@ class TagModel(ProxmoxModelDiffSync):
         return super(NautobotModel, self).update(attrs)
 
     def delete(self):
-        """Delete a Tag in Nautobot.
+        """Drop the Tag from the sync's working set without deleting it from Nautobot.
+
+        ``SKIP_UNMATCHED_DST`` already keeps Tags out of the delete path; this guards against that
+        flag being changed, since deleting a Tag strips it from every object in Nautobot.
 
         Returns:
-            TagModel: The deleted Tag model, or None if the Tag was not found.
+            TagModel: This model.
         """
-        self.adapter.job.logger.debug(f"Delete Tag: {self.name}")
-        try:
-            _tag = Tag.objects.get(name=self.name)
-            super().delete()
-            _tag.delete()
-            return self
-        except Tag.DoesNotExist as err:
-            self.adapter.job.logger.warning(f"Unable to find Tag {self.name} for deletion. {err}")
+        return super(NautobotModel, self).delete()

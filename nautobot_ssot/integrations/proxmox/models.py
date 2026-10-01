@@ -112,10 +112,10 @@ class SSOTProxmoxConfig(PrimaryModel):  # pylint: disable=too-many-ancestors
         blank=True,
         related_name="+",
         verbose_name="SSoT Tag",
-        help_text="Tag applied to every object synced from Proxmox VE, for visibility in the "
-        "Nautobot UI. Purely cosmetic — this integration identifies which objects it manages via "
-        "the 'last_synced_from_proxmox_on' custom field, not this tag. If another integration "
-        "deletes this tag, the next Proxmox VE sync recreates it automatically.",
+        help_text="Tag applied to every object synced from Proxmox VE, so they are easy to find in the "
+        "Nautobot UI. It does not decide which objects the sync manages: that is the "
+        "'last_synced_from_proxmox_on' custom field, and for Virtual Machines the 'proxmox_config_id' "
+        "custom field naming the owning config. If the tag is deleted, the next sync recreates it.",
     )
     default_vm_status_map = models.JSONField(default=_get_default_vm_status_map, encoder=DjangoJSONEncoder)
     default_ip_status_map = models.JSONField(default=_get_default_ip_status_map, encoder=DjangoJSONEncoder, blank=True)

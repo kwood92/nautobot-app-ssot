@@ -31,11 +31,12 @@ DEFAULT_VM_STATUS_MAP = {"running": "Active", "stopped": "Offline", "paused": "S
 DEFAULT_IP_STATUS_MAP = {"PREFERRED": "Active", "UNKNOWN": "Reserved"}
 
 
-def create_default_proxmox_config(proxmox_url="https://pve.local:8006"):
+def create_default_proxmox_config(proxmox_url="https://pve.local:8006", name="ProxmoxUnitTestConfig"):
     """Create an SSOTProxmoxConfig with its SecretsGroup, ExternalIntegration and default objects.
 
     Args:
         proxmox_url (str): Remote URL for the ExternalIntegration.
+        name (str): Config name; pass a different name to create a second config.
 
     Returns:
         SSOTProxmoxConfig: The created or existing config.
@@ -89,7 +90,7 @@ def create_default_proxmox_config(proxmox_url="https://pve.local:8006"):
     device_role, _ = Role.objects.get_or_create(name=NODE_DEVICE_ROLE_NAME)
 
     config, _ = SSOTProxmoxConfig.objects.get_or_create(
-        name="ProxmoxUnitTestConfig",
+        name=name,
         defaults=dict(  # pylint: disable=use-dict-literal
             description="Unit Test Config.",
             proxmox_instance=external_integration,

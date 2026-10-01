@@ -55,3 +55,10 @@ class TestProxmoxSignals(TestCase):
             signals.nautobot_database_ready_callback(sender=None, apps=django_apps)
 
         self.assertFalse(Location.objects.filter(name=NODE_LOCATION_NAME).exists())
+
+    def test_default_external_integration_verifies_ssl(self):
+        """The auto-created default ExternalIntegration verifies the Proxmox VE certificate."""
+        ExternalIntegration.objects.filter(name="DefaultProxmoxInstance").delete()
+        with patch.dict(signals.config, {"proxmox_create_default_secrets": True}):
+            signals.create_default_proxmox_config(sender=None, apps=django_apps)
+        self.assertTrue(ExternalIntegration.objects.get(name="DefaultProxmoxInstance").verify_ssl)

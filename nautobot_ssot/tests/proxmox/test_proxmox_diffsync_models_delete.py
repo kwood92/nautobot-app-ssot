@@ -1,6 +1,8 @@
 """Delete-path tests for the Proxmox VE DiffSync models (DB-backed)."""
 
+from django.contrib.contenttypes.models import ContentType
 from nautobot.apps.testing import TestCase
+from nautobot.dcim.models import Location
 from nautobot.extras.models import Tag
 from nautobot.virtualization.models import Cluster, VirtualMachine, VMInterface
 
@@ -36,16 +38,32 @@ class TestProxmoxDiffSyncModelsDelete(ProxmoxSyncTestMixin, TestCase):
         # Clusters use SKIP_UNMATCHED_DST, so they are preserved.
         self.assertTrue(Cluster.objects.filter(name="TestCluster").exists())
 
-    def test_tag_model_delete(self):
-        """A Tag no longer present in the source is deleted."""
+    def test_tag_absent_from_source_is_kept(self):
+        """A Tag the source no longer reports is left in Nautobot, not deleted."""
         source = self._source()
         self._seed_cluster(source)
-        tag = source.tag(name="custom-tag", description="temp")
-        source.add(tag)
+        source.add(source.tag(name="custom-tag", description="temp"))
         source.sync_to(self._nb_adapter())
         self.assertTrue(Tag.objects.filter(name="custom-tag").exists())
 
         empty_source = self._source()
         self._seed_cluster(empty_source)
         empty_source.sync_to(self._nb_adapter())
-        self.assertFalse(Tag.objects.filter(name="custom-tag").exists())
+        self.assertTrue(Tag.objects.filter(name="custom-tag").exists())
+
+    def test_unrelated_tag_survives_sync(self):
+        """A pre-existing Tag the integration never synced keeps existing and stays assigned.
+
+        Covers syncs with Proxmox tag syncing disabled, where the source holds only the SSoT tag.
+        """
+        unrelated = Tag.objects.create(name="unrelated-tag")
+        unrelated.content_types.add(ContentType.objects.get_for_model(Location))
+        location = self.config.default_location
+        location.tags.add(unrelated)
+
+        source = self._source()
+        self._seed_cluster(source)
+        source.sync_to(self._nb_adapter())
+
+        self.assertTrue(Tag.objects.filter(name="unrelated-tag").exists())
+        self.assertIn(unrelated, Location.objects.get(pk=location.pk).tags.all())

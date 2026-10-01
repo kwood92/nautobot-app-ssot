@@ -21,23 +21,29 @@ class ProxmoxSyncTestMixin:
         nautobot_database_ready_callback(sender=None, apps=django_apps)
         self.config = create_default_proxmox_config()
 
-    def _source(self):
+    def _source(self, config=None):
         """Build an empty Proxmox source adapter with a mocked client.
+
+        Args:
+            config (SSOTProxmoxConfig): Config to sync with; defaults to ``self.config``.
 
         Returns:
             ProxmoxDiffSync: Adapter with nothing loaded.
         """
         return ProxmoxDiffSync(
-            job=MagicMock(), sync=MagicMock(), client=MagicMock(), config=self.config, cluster_filters=None
+            job=MagicMock(), sync=MagicMock(), client=MagicMock(), config=config or self.config, cluster_filters=None
         )
 
-    def _nb_adapter(self):
+    def _nb_adapter(self, config=None):
         """Build a Nautobot adapter loaded from the current database state.
+
+        Args:
+            config (SSOTProxmoxConfig): Config to sync with; defaults to ``self.config``.
 
         Returns:
             NBAdapter: Loaded target adapter.
         """
-        nb_adapter = NBAdapter(config=self.config, cluster_filters=None)
+        nb_adapter = NBAdapter(config=config or self.config, cluster_filters=None)
         nb_adapter.job = MagicMock()
         nb_adapter.load()
         return nb_adapter

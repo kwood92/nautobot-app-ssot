@@ -1,0 +1,1 @@
+Removed the Proxmox VE config form's ExternalIntegration fields (Secrets Group, Remote URL, Verify SSL, Timeout), which let users without permission to change External Integrations edit them. Edit these on the External Integration, as for vSphere and Infoblox.

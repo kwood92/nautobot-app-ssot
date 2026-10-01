@@ -1,7 +1,10 @@
 """Unit tests for the Proxmox VE API client."""
 
 import unittest
+import warnings
 from unittest.mock import MagicMock, patch
+
+import urllib3
 
 from nautobot_ssot.integrations.proxmox.utilities.proxmox_client import ProxmoxClient, ProxmoxConfig
 
@@ -45,6 +48,14 @@ class TestProxmoxClient(unittest.TestCase):
         self.assertEqual(kwargs["user"], "svc@pve")
         self.assertEqual(kwargs["token_name"], "nautobot")
         self.assertEqual(kwargs["token_value"], "00000000-0000-0000-0000-000000000000")
+
+    def test_unverified_client_does_not_silence_warnings_process_wide(self, mock_api):  # pylint: disable=unused-argument
+        """Creating a client with SSL verification off leaves urllib3's warning on for other code."""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("default")  # Start from a clean filter list, whatever ran before.
+            ProxmoxClient(_config())  # verify_ssl=False
+            warnings.warn("unverified request elsewhere", urllib3.exceptions.InsecureRequestWarning)
+        self.assertEqual(len(caught), 1)
 
     def test_authentication_success(self, mock_api):
         """is_authenticated is True when the version probe succeeds."""

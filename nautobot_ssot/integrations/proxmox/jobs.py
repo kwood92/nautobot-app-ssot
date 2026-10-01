@@ -50,6 +50,7 @@ def _get_proxmox_client_config(app_config, debug):
         token_id=token_id,
         token_secret=token_secret,
         verify_ssl=app_config.proxmox_instance.verify_ssl,
+        timeout=app_config.proxmox_instance.timeout,
         vm_status_map=app_config.default_vm_status_map,
         ip_status_map=app_config.default_ip_status_map,
         primary_ip_sort_by=app_config.primary_ip_sort_by,

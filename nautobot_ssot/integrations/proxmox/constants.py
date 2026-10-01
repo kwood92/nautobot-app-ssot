@@ -9,6 +9,9 @@ SSOT_TAG_DESCRIPTION = "Object synced at some point from Proxmox VE to Nautobot"
 # Custom field stamped with the date of the last sync.
 SSOT_CUSTOM_FIELD_KEY = "last_synced_from_proxmox_on"
 SSOT_CUSTOM_FIELD_LABEL = "Last synced from Proxmox on"
+# Records which SSOTProxmoxConfig synced a Device or VM, so each config only changes its own objects.
+CONFIG_CUSTOM_FIELD_KEY = "proxmox_config_id"
+CONFIG_CUSTOM_FIELD_LABEL = "Proxmox VE Config ID"
 
 # Custom relationship linking a VirtualMachine to its host node Device (one-to-many).
 HOST_RELATIONSHIP_LABEL = "Proxmox VM Host"

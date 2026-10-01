@@ -21,7 +21,7 @@ from nautobot_ssot.integrations.proxmox.forms import SSOTProxmoxConfigForm
 
 
 class SSOTProxmoxConfigFormTestCase(TestCase):
-    """Tests for the SSOTProxmoxConfigForm pass-through fields."""
+    """Tests for the SSOTProxmoxConfigForm."""
 
     @classmethod
     def setUpTestData(cls):
@@ -30,6 +30,13 @@ class SSOTProxmoxConfigFormTestCase(TestCase):
         cls.bad_secrets_group = cls._build_secrets_group("ProxmoxFormBadSG", with_token=False)
         cls.integration = ExternalIntegration.objects.create(
             name="ProxmoxFormUnitTestInstance",
+            remote_url="https://placeholder.local:8006",
+            secrets_group=cls.good_secrets_group,
+            verify_ssl=False,
+            timeout=30,
+        )
+        cls.integration_missing_token = ExternalIntegration.objects.create(
+            name="ProxmoxFormUnitTestInstanceMissingToken",
             remote_url="https://placeholder.local:8006",
             secrets_group=cls.bad_secrets_group,
             verify_ssl=False,
@@ -72,9 +79,6 @@ class SSOTProxmoxConfigFormTestCase(TestCase):
             "default_location": cls.location.pk,
             "default_device_type": cls.device_type.pk,
             "default_device_role": cls.device_role.pk,
-            "proxmox_remote_url": "https://new-remote.local:8006",
-            "proxmox_verify_ssl": True,
-            "proxmox_timeout": 45,
         }
 
     @staticmethod
@@ -115,39 +119,42 @@ class SSOTProxmoxConfigFormTestCase(TestCase):
             )
         return secrets_group
 
-    def test_selecting_secrets_group_missing_token_is_rejected(self):
-        """Picking a Secrets Group without a REST Token association fails model validation."""
+    def test_saving_does_not_change_the_external_integration(self):
+        """The config form only links an ExternalIntegration; it never edits it, even if asked to."""
         form_data = dict(self.base_form_data)
-        form_data["proxmox_secrets_group"] = self.bad_secrets_group.pk
-        form = SSOTProxmoxConfigForm(data=form_data)
-        self.assertFalse(form.is_valid())
-        self.assertIn("proxmox_instance", form.errors)
-        self.assertIn("Token", form.errors["proxmox_instance"][0])
-
-    def test_selecting_valid_secrets_group_writes_through_to_integration(self):
-        """A valid Secrets Group plus URL/verify_ssl/timeout write through to the ExternalIntegration."""
-        form_data = dict(self.base_form_data)
-        form_data["proxmox_secrets_group"] = self.good_secrets_group.pk
+        # Values a crafted POST could carry for the integration's settings.
+        form_data.update(
+            {
+                "proxmox_secrets_group": self.bad_secrets_group.pk,
+                "proxmox_remote_url": "https://attacker.example:8006",
+                "proxmox_verify_ssl": False,
+                "proxmox_timeout": 45,
+            }
+        )
         form = SSOTProxmoxConfigForm(data=form_data)
         self.assertTrue(form.is_valid(), form.errors)
         form.save()
 
         self.integration.refresh_from_db()
+        self.assertEqual(self.integration.remote_url, "https://placeholder.local:8006")
         self.assertEqual(self.integration.secrets_group, self.good_secrets_group)
-        self.assertEqual(self.integration.remote_url, "https://new-remote.local:8006")
-        self.assertTrue(self.integration.verify_ssl)
-        self.assertEqual(self.integration.timeout, 45)
+        self.assertEqual(self.integration.timeout, 30)
+
+    def test_linking_integration_without_token_secret_is_rejected(self):
+        """Linking an ExternalIntegration whose Secrets Group lacks a REST Token fails validation."""
+        form_data = dict(self.base_form_data)
+        form_data["proxmox_instance"] = self.integration_missing_token.pk
+        form = SSOTProxmoxConfigForm(data=form_data)
+        self.assertFalse(form.is_valid())
+        self.assertIn("proxmox_instance", form.errors)
+        self.assertIn("Token", form.errors["proxmox_instance"][0])
 
     def test_secrets_and_secrets_group_are_never_created_by_the_form(self):
         """Saving the form creates no Secret or SecretsGroup objects."""
         secret_count_before = Secret.objects.count()
         secrets_group_count_before = SecretsGroup.objects.count()
-
-        form_data = dict(self.base_form_data)
-        form_data["proxmox_secrets_group"] = self.good_secrets_group.pk
-        form = SSOTProxmoxConfigForm(data=form_data)
+        form = SSOTProxmoxConfigForm(data=dict(self.base_form_data))
         self.assertTrue(form.is_valid(), form.errors)
         form.save()
-
         self.assertEqual(Secret.objects.count(), secret_count_before)
         self.assertEqual(SecretsGroup.objects.count(), secrets_group_count_before)

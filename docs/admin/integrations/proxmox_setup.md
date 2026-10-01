@@ -38,11 +38,51 @@ All other settings are stored on the `SSOTProxmoxConfig` object and edited in th
 
 The integration authenticates to Proxmox VE with an API token. Password login is not supported.
 
-Create a token in Proxmox under *Datacenter → Permissions → API Tokens* and assign it a read-only
-role such as `PVEAuditor`. Proxmox displays two values when the token is created:
+Use a dedicated user and a privilege-separated token rather than a token for `root@pam`. Proxmox
+displays two values when the token is created:
 
-- **Token ID**, in the form `user@realm!tokenid` (for example `root@pam!nautobot`).
+- **Token ID**, in the form `user@realm!tokenid` (for example `nautobot@pve!ssot`).
 - **Token secret**, a UUID. Proxmox shows it only once, so copy it immediately.
+
+### Token permissions
+
+The sync only reads from Proxmox VE. These are the privileges each API call needs:
+
+| API call | Privilege | Path |
+|---|---|---|
+| `/version`, `/nodes`, `/nodes/{node}/network` | none | — |
+| `/cluster/status` | `Sys.Audit` | `/` |
+| `/nodes/{node}/status` | `Sys.Audit` | `/nodes/{node}` |
+| `/cluster/resources`, `/nodes/{node}/qemu/{vmid}/config`, `/nodes/{node}/lxc/{vmid}/config` | `VM.Audit` | `/vms/{vmid}` |
+| `/nodes/{node}/qemu/{vmid}/agent/network-get-interfaces` | PVE 9: `VM.GuestAgent.Audit`; PVE 8: `VM.Monitor` | `/vms/{vmid}` |
+
+A minimal role, granted at `/` so it propagates to every node and VM:
+
+```bash
+# PVE 9
+pveum role add NautobotSSoT --privs "Sys.Audit VM.Audit VM.GuestAgent.Audit"
+# PVE 8 (see the warning below)
+pveum role add NautobotSSoT --privs "Sys.Audit VM.Audit"
+
+pveum user add nautobot@pve
+pveum user token add nautobot@pve ssot --privsep 1
+pveum acl modify / --users nautobot@pve --roles NautobotSSoT
+pveum acl modify / --tokens 'nautobot@pve!ssot' --roles NautobotSSoT
+```
+
+With privilege separation, a token can only use privileges granted to both the user and the token,
+so the ACL is applied to both. The built-in `PVEAuditor` role also works, but grants more read access
+than the sync needs.
+
+!!! warning "Grant `VM.Audit` at `/` or `/vms`, not per VM or pool"
+    `/cluster/resources` silently leaves out VMs the token can't audit, without an error. The sync then
+    treats those VMs as removed and deletes them from Nautobot.
+
+!!! warning "Proxmox VE 8 and `VM.Monitor`"
+    On PVE 8, reading the guest agent's interfaces needs `VM.Monitor`, which also allows guest agent
+    `exec`, `file-read`, `file-write` and `set-user-password`: in effect, root inside every guest. Don't
+    grant it to this token. Without it, QEMU VMs sync without IP addresses; LXC container IPs come from
+    the container config and are unaffected.
 
 Nautobot stores both values as [Secrets][nb-secret], grouped in a [Secrets Group][nb-secretsgroup]
 that is attached to an [External Integration][nb-extint] for the Proxmox host.
@@ -59,23 +99,25 @@ with a validation error if either one is missing.
 
 ### Creating the Secrets
 
-Secret values are always entered on the Secret objects themselves. The Config page only selects an
-existing Secrets Group.
+Secret values are always entered on the Secret objects themselves. The connection settings (Remote
+URL, Secrets Group, Verify SSL, Timeout) live on the [External Integration][nb-extint] and are edited
+under **Extensibility → External Integrations**, which requires permission to change External
+Integrations. The Config page only selects an existing External Integration, as the vSphere and
+Infoblox integrations do.
 
 **With `proxmox_create_default_secrets=True` (default):**
 
 1. Edit the two default Secrets so they resolve to the Token ID and token secret.
-2. Open the `ProxmoxConfigDefault` config under **Apps → Single Source of Truth → Proxmox VE
-   Config**.
-3. Set **Secrets Group**, **Remote URL**, **Verify SSL**, and **Timeout**. These values are saved to
-   the `DefaultProxmoxInstance` External Integration.
+2. Open the `DefaultProxmoxInstance` External Integration under **Extensibility → External
+   Integrations** and set **Remote URL**, **Verify SSL**, and **Timeout**. It already uses the
+   default Secrets Group.
 
 **With `proxmox_create_default_secrets=False`:**
 
 1. Create two Secrets for the Token ID and token secret.
 2. Create a Secrets Group with the associations listed above.
-3. Create an External Integration and an `SSOTProxmoxConfig` that references it. Remote URL, Verify
-   SSL, Timeout, and Secrets Group can then be set on the Config page as described above.
+3. Create an External Integration with the Remote URL, Verify SSL, Timeout, and that Secrets Group.
+4. Create an `SSOTProxmoxConfig` and select the External Integration.
 
 The SSoT tag, custom fields, relationship, statuses, and node Manufacturer/DeviceType/Role are
 created in both cases. The default Location (`Proxmox VE Default Location`) is only created when
@@ -90,7 +132,7 @@ To use the default environment-variable Secrets, set these variables in the Naut
 environments:
 
 ```bash
-export NAUTOBOT_SSOT_PROXMOX_TOKEN_ID="root@pam!nautobot"
+export NAUTOBOT_SSOT_PROXMOX_TOKEN_ID="nautobot@pve!ssot"
 export NAUTOBOT_SSOT_PROXMOX_TOKEN_SECRET="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 ```
 

@@ -7,6 +7,7 @@ from nautobot.apps.testing import TestCase
 from nautobot.extras.models import JobResult
 
 from nautobot_ssot.integrations.proxmox import jobs
+from nautobot_ssot.integrations.proxmox.utilities import ProxmoxClient
 
 
 def _mock_app_config(**overrides):
@@ -68,6 +69,17 @@ class ProxmoxJobTest(TestCase):
             self.assertIsNone(mapping.source_url)
             self.assertEqual(mapping.target_name, target_name)
             self.assertEqual(mapping.target_url, target_url)
+
+    @patch("nautobot_ssot.integrations.proxmox.utilities.proxmox_client.ProxmoxAPI")
+    def test_external_integration_timeout_reaches_proxmox_api(self, mock_api):
+        """The ExternalIntegration's timeout is used for requests to Proxmox VE."""
+        app_config = _mock_app_config()
+        app_config.proxmox_instance.timeout = 45
+
+        ProxmoxClient(jobs._get_proxmox_client_config(app_config, debug=False))  # pylint: disable=protected-access
+
+        _, kwargs = mock_api.call_args
+        self.assertEqual(kwargs["timeout"], 45)
 
     def test_get_proxmox_client_config(self):
         """_get_proxmox_client_config() builds a ProxmoxConfig from the SSOTProxmoxConfig instance."""

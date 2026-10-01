@@ -1,0 +1,1 @@
+Proxmox VE: the default External Integration now verifies SSL, the client no longer silences urllib3's insecure-request warning process-wide, and the setup guide documents the exact API token privileges for PVE 8 and 9.

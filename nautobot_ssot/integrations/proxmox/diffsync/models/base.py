@@ -5,6 +5,7 @@ from collections import defaultdict
 from diffsync.exceptions import ObjectCrudException
 from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import ValidationError
+from django.db.models import Q
 from django.utils import timezone
 from nautobot.dcim.models import Device
 from nautobot.extras.models.customfields import CustomField, CustomFieldTypeChoices
@@ -14,11 +15,25 @@ from nautobot.virtualization.models import VirtualMachine, VMInterface
 
 from nautobot_ssot.contrib import NautobotModel
 from nautobot_ssot.integrations.proxmox.constants import (
+    CONFIG_CUSTOM_FIELD_KEY,
     SSOT_CUSTOM_FIELD_KEY,
     SSOT_CUSTOM_FIELD_LABEL,
     SSOT_TAG_NAME,
     get_ssot_tag_name,
 )
+
+
+def owned_by_config_or_unowned(config):
+    """Match objects the given config synced, plus objects no config has claimed yet.
+
+    Args:
+        config (SSOTProxmoxConfig): The config running the sync.
+
+    Returns:
+        Q: Filter on the ``proxmox_config_id`` custom field.
+    """
+    key = f"_custom_field_data__{CONFIG_CUSTOM_FIELD_KEY}"
+    return Q(**{key: str(config.pk)}) | Q(**{f"{key}__isnull": True}) | Q(**{key: None}) | Q(**{key: ""})
 
 
 class ProxmoxModelDiffSync(NautobotModel):
@@ -34,6 +49,10 @@ class ProxmoxModelDiffSync(NautobotModel):
             adapter (Adapter): The adapter used to look up related objects in the cache.
         """
         super()._update_obj_with_parameters(obj, parameters, adapter)
+        config = getattr(adapter, "config", None)
+        if config is not None and isinstance(obj, (Device, VirtualMachine)):
+            # Saved by tag_object() below.
+            obj.cf[CONFIG_CUSTOM_FIELD_KEY] = str(config.pk)
         if isinstance(obj, (Device, VirtualMachine, VMInterface, IPAddress)):
             tag_name = get_ssot_tag_name(getattr(adapter, "config", None))
             cls.tag_object(cls, obj, tag_name=tag_name)
