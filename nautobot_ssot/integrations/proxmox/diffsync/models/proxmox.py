@@ -31,7 +31,7 @@ from nautobot_ssot.integrations.proxmox.constants import (
     NODE_PVE_VERSION_CF,
     SSOT_CUSTOM_FIELD_KEY,
 )
-from nautobot_ssot.integrations.proxmox.diffsync.models.base import ProxmoxModelDiffSync
+from nautobot_ssot.integrations.proxmox.diffsync.models.base import ProxmoxModelDiffSync, owned_by_config_or_unowned
 
 
 class InterfacesDict(TypedDict):
@@ -399,11 +399,12 @@ class VirtualMachineModel(ProxmoxModelDiffSync):
         Returns:
             QuerySet: The VirtualMachine queryset to load.
         """
+        queryset = cls._model.objects.filter(
+            owned_by_config_or_unowned(config), _custom_field_data__has_key=SSOT_CUSTOM_FIELD_KEY
+        )
         if cluster_filters:
-            return cls._model.objects.filter(
-                _custom_field_data__has_key=SSOT_CUSTOM_FIELD_KEY, cluster__in=cluster_filters
-            )
-        return cls._model.objects.filter(_custom_field_data__has_key=SSOT_CUSTOM_FIELD_KEY)
+            return queryset.filter(cluster__in=cluster_filters)
+        return queryset
 
 
 class ClusterModel(ProxmoxModelDiffSync):

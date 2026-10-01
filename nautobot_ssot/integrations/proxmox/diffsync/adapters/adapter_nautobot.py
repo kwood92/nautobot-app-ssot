@@ -2,13 +2,15 @@
 
 from typing import Any, Dict, List
 
-from diffsync.enum import DiffSyncFlags
+from diffsync.enum import DiffSyncFlags, DiffSyncModelFlags
+from diffsync.exceptions import ObjectNotFound
 from django.core.exceptions import ValidationError
 from nautobot.dcim.models import Device, Interface
 from nautobot.ipam.models import IPAddress
 from nautobot.virtualization.models import VirtualMachine
 
 from nautobot_ssot.contrib import NautobotAdapter
+from nautobot_ssot.integrations.proxmox.constants import CONFIG_CUSTOM_FIELD_KEY
 from nautobot_ssot.integrations.proxmox.diffsync.models.proxmox import (
     ClusterGroupModel,
     ClusterModel,
@@ -55,6 +57,8 @@ class NBAdapter(NautobotAdapter):
         self._primary_ips = []
         self._device_primary_ips = []
         self._interface_links = []
+        # VMs loaded without an owning config: unique id -> pk, for adoption after the sync.
+        self._unowned_vms = {}
 
     def load_param_mac_address(self, parameter_name, database_object):
         """Load the MAC address as a string.
@@ -108,6 +112,38 @@ class NBAdapter(NautobotAdapter):
         except ValidationError as err:
             self.job.logger.error(f"Unable to {error_context}: {err}")
             return False
+
+    def sync_from(self, source, *args, **kwargs):  # pylint: disable=arguments-differ
+        """Sync from the source, then claim any unowned VMs the source reported.
+
+        Done here rather than in ``sync_complete()``, which diffsync skips when nothing changed.
+
+        Args:
+            source (Adapter): The Proxmox VE adapter.
+            *args (Any): Passed to ``Adapter.sync_from``.
+            **kwargs (Any): Passed to ``Adapter.sync_from``.
+
+        Returns:
+            Diff: The diff that was synced.
+        """
+        diff = super().sync_from(source, *args, **kwargs)
+        self._adopt_unowned_vms(source)
+        return diff
+
+    def _adopt_unowned_vms(self, source):
+        """Record this config as the owner of unowned VMs that the source reported.
+
+        Args:
+            source (Adapter): The Proxmox VE adapter.
+        """
+        for unique_id, pk in self._unowned_vms.items():
+            try:
+                source.get(VirtualMachineModel, unique_id)
+            except ObjectNotFound:
+                continue
+            vm = VirtualMachine.objects.get(pk=pk)
+            vm.cf[CONFIG_CUSTOM_FIELD_KEY] = str(self.config.pk)
+            self._safe_validated_save(vm, f"record {self.config} as the owner of {vm}")
 
     def sync_complete(self, source, diff, flags: DiffSyncFlags = DiffSyncFlags.NONE, logger=None):
         """Assign deferred primary IPs and interface relationships once the sync is complete.
@@ -207,4 +243,8 @@ class NBAdapter(NautobotAdapter):
         """
         parameter_names = self._get_parameter_names(diffsync_model)
         for database_object in diffsync_model._get_queryset(self.config, self.cluster_filters):
-            self._load_single_object(database_object, diffsync_model, parameter_names)
+            loaded = self._load_single_object(database_object, diffsync_model, parameter_names)
+            if diffsync_model is VirtualMachineModel and not database_object.cf.get(CONFIG_CUSTOM_FIELD_KEY):
+                # Synced before ownership was recorded, possibly by another config: never delete it.
+                loaded.model_flags |= DiffSyncModelFlags.SKIP_UNMATCHED_DST
+                self._unowned_vms[loaded.get_unique_id()] = database_object.pk

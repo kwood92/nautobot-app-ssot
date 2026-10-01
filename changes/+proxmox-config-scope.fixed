@@ -1,0 +1,1 @@
+Fixed syncing several Proxmox VE instances deleting each other's Virtual Machines; each config now only changes the Virtual Machines it synced, recorded in the new proxmox_config_id custom field.

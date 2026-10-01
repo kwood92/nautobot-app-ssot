@@ -15,6 +15,8 @@ from nautobot.extras.choices import (
 
 from nautobot_ssot.integrations.proxmox.constants import (
     CLUSTER_TYPE_NAME,
+    CONFIG_CUSTOM_FIELD_KEY,
+    CONFIG_CUSTOM_FIELD_LABEL,
     HOST_RELATIONSHIP_KEY,
     HOST_RELATIONSHIP_LABEL,
     NODE_CPU_COUNT_CF,
@@ -103,6 +105,13 @@ def nautobot_database_ready_callback(sender, *, apps, **kwargs):  # pylint: disa
         custom_field.content_types.add(content_type)
     custom_field.type = CustomFieldTypeChoices.TYPE_DATE
     custom_field.save()
+
+    config_field, _ = CustomField.objects.get_or_create(
+        key=CONFIG_CUSTOM_FIELD_KEY,
+        defaults={"type": CustomFieldTypeChoices.TYPE_TEXT, "label": CONFIG_CUSTOM_FIELD_LABEL},
+    )
+    for content_type in (device_ct, vm_ct):
+        config_field.content_types.add(content_type)
 
     # Links each VM to its host node Device (Nautobot's VirtualMachine has no host-Device FK).
     Relationship = apps.get_model("extras", "Relationship")

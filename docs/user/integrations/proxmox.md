@@ -70,6 +70,11 @@ The sync is idempotent. Each run brings Nautobot in line with Proxmox:
 - Unchanged objects are left untouched, changed attributes are updated, and new objects are created.
 - Only objects with the `last_synced_from_proxmox_on` custom field are updated or deleted. Manually
   created objects are not modified.
+- Each synced Device and Virtual Machine records the config that synced it in the
+  `proxmox_config_id` custom field. A sync only updates or deletes the Virtual Machines its own config
+  synced, so several Proxmox VE instances (one config each) can be synced into the same Nautobot.
+  Virtual Machines synced before this field existed are never deleted; the first config that reports
+  one records itself as the owner, after which it is managed normally.
 - **Deleted when they disappear from Proxmox:** `VirtualMachine`, `VMInterface`, and node
   `Interface` objects.
 - **Not deleted by a sync:** `Prefix`, `IPAddress`, `Device` (nodes), `Cluster`, `ClusterGroup`,
@@ -103,6 +108,10 @@ The sync is idempotent. Each run brings Nautobot in line with Proxmox:
 - **Resource values are rounded down.** Memory is stored in whole MB and disk in whole GB, so very
   small values may display as `0`.
 - **Token authentication only.** Username/password login is not supported.
+- **Names must not collide across instances.** Nautobot requires Virtual Machine names to be unique
+  within a cluster and node Device names to be unique within a location. If two Proxmox VE instances
+  report the same name in the same cluster or location, the second config's create fails (logged in
+  the job result) rather than taking over the first config's object.
 - **The vSphere integration may delete the SSoT tag.** vSphere tag cleanup is not limited to its own
   tags, so a vSphere sync can remove the "SSoT Synced from Proxmox" tag. The next Proxmox VE sync
   recreates it, and sync behavior is not affected.
