@@ -159,6 +159,8 @@ required.
 | **Sync LXC Containers** (`sync_lxc`) | `True` | Include LXC containers as Virtual Machines (in addition to QEMU VMs). |
 | **Sync Nodes as Devices** (`sync_nodes_as_devices`) | `True` | Model Proxmox nodes as Nautobot Devices and link VMs to their host node. |
 | **Sync Proxmox VE Tags** (`sync_proxmox_tags`) | `True` | Copy Proxmox VE tags onto Nautobot Virtual Machines as Tags. |
+| **Sync VLANs** (`sync_vlans`) | `True` | Create VLANs from VM/container `tag=`/`trunks=` and node VLAN interfaces, and set interface modes and VLANs. When off, interface VLANs in Nautobot are left untouched. |
+| **VLAN Group** (`vlan_group`) | empty | VLAN Group for this config's VLANs. Empty means a group named after the config, created on the first sync. Give each Proxmox VE instance its own group so reused VLAN IDs stay apart. |
 | **SSoT Tag** (`default_ssot_tag`) | Tag named "SSoT Synced from Proxmox" (pre-created) | Optional. Tag applied to every synced object for visibility in the UI. It does not affect which objects the sync manages; that is determined by the `last_synced_from_proxmox_on` custom field. If the tag is deleted, this field is cleared and the next sync recreates the tag. See [Limitations](../../user/integrations/proxmox.md#limitations). |
 | **VM status map** (`default_vm_status_map`) | see [The three JSON map fields](#the-three-json-map-fields) | Map Proxmox VM states to Nautobot Status names. |
 | **IP status map** (`default_ip_status_map`) | see [The three JSON map fields](#the-three-json-map-fields) | Map IP states to Nautobot Status names. |

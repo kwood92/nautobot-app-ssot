@@ -1,5 +1,6 @@
 """Nautobot Adapter for the Proxmox VE Integration."""
 
+from copy import copy
 from typing import Any, Dict, List
 
 from diffsync.enum import DiffSyncFlags, DiffSyncModelFlags
@@ -20,8 +21,18 @@ from nautobot_ssot.integrations.proxmox.diffsync.models.proxmox import (
     PrefixModel,
     TagModel,
     VirtualMachineModel,
+    VLANGroupModel,
+    VLANModel,
     VMInterfaceModel,
 )
+
+# Interface VLAN parameters and the values that mean "no VLAN data".
+VLAN_PARAMETER_BLANKS = {
+    "mode": "",
+    "untagged_vlan__vid": None,
+    "untagged_vlan__vlan_group__name": None,
+    "tagged_vlans": [],
+}
 
 
 class NBAdapter(NautobotAdapter):
@@ -31,7 +42,7 @@ class NBAdapter(NautobotAdapter):
     _device_primary_ips: List[Dict[str, Any]]
     _interface_links: List[Dict[str, Any]]
 
-    top_level = ("tag", "prefix", "clustergroup", "device", "virtual_machine", "ip_address")
+    top_level = ("tag", "prefix", "vlangroup", "clustergroup", "device", "virtual_machine", "ip_address")
     tag = TagModel
     prefix = PrefixModel
     clustergroup = ClusterGroupModel
@@ -40,6 +51,8 @@ class NBAdapter(NautobotAdapter):
     device_interface = DeviceInterfaceModel
     virtual_machine = VirtualMachineModel
     interface = VMInterfaceModel
+    vlangroup = VLANGroupModel
+    vlan = VLANModel
     ip_address = IPAddressModel
 
     def __init__(self, *args, job=None, sync=None, config, cluster_filters, **kwargs):
@@ -59,6 +72,23 @@ class NBAdapter(NautobotAdapter):
         self._interface_links = []
         # VMs loaded without an owning config: unique id -> pk, for adoption after the sync.
         self._unowned_vms = {}
+
+    def _handle_single_parameter(self, parameters, parameter_name, database_object, diffsync_model):
+        """Load a parameter, blanking interface VLAN parameters when VLAN syncing is off.
+
+        The source reports no VLAN data when ``sync_vlans`` is off; loading blanks here too means the
+        diff never touches interface VLANs, including ones set by hand.
+
+        Args:
+            parameters (dict): The parameters being collected for the DiffSync model.
+            parameter_name (str): The parameter to load.
+            database_object (Model): The Nautobot object being loaded.
+            diffsync_model (Type[DiffSyncModel]): The DiffSync model class being loaded.
+        """
+        if parameter_name in VLAN_PARAMETER_BLANKS and not self.config.sync_vlans:
+            parameters[parameter_name] = copy(VLAN_PARAMETER_BLANKS[parameter_name])
+            return
+        super()._handle_single_parameter(parameters, parameter_name, database_object, diffsync_model)
 
     def load_param_mac_address(self, parameter_name, database_object):
         """Load the MAC address as a string.

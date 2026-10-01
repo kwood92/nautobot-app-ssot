@@ -66,6 +66,8 @@ class SSOTProxmoxConfigUIViewSet(
                     "sync_lxc",
                     "sync_nodes_as_devices",
                     "sync_proxmox_tags",
+                    "sync_vlans",
+                    "vlan_group",
                     "primary_ip_sort_by",
                     "default_clustergroup_name",
                     "default_cluster_name",

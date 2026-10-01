@@ -9,6 +9,8 @@ from .proxmox import (
     PrefixModel,
     TagModel,
     VirtualMachineModel,
+    VLANGroupModel,
+    VLANModel,
     VMInterfaceModel,
 )
 
@@ -21,5 +23,7 @@ __all__ = (
     "PrefixModel",
     "TagModel",
     "VirtualMachineModel",
+    "VLANGroupModel",
+    "VLANModel",
     "VMInterfaceModel",
 )

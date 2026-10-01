@@ -37,6 +37,14 @@ The sync calls these read-only REST endpoints (plus the QEMU guest agent and LXC
 | Proxmox VE tags | Nautobot `Tag`s on the VirtualMachine — when *Sync Proxmox VE Tags* is enabled |
 | NICs | `VMInterface` |
 | IP addresses | `IPAddress` + the containing `Prefix` |
+| VM / container NIC `tag=` / `trunks=` | `VLAN`s in the config's VLAN Group; VMInterface `mode` (`access` for `tag` only, `tagged` with `trunks`), `untagged_vlan`, `tagged_vlans` — when *Sync VLANs* is enabled |
+| Node VLAN interface (`vlan-id`, or a `<parent>.<vid>` / `vlan<vid>` name) | `VLAN` in the config's VLAN Group; DCIM Interface `mode` `access` with that `untagged_vlan` — when *Sync VLANs* is enabled |
+
+VLANs are created in one VLAN Group per config: the config's *VLAN Group*, or a group named after
+the config when none is set. Keeping each Proxmox VE instance in its own group means a VLAN ID reused
+on two instances becomes two Nautobot VLANs. New VLANs are named `VLAN <vid>`; a name changed in
+Nautobot is kept. VLANs and VLAN Groups are never deleted by a sync. With *Sync VLANs* off, interface
+modes and VLANs in Nautobot are left as they are.
 
 Nautobot's `VirtualMachine` has no host Device field, so each VM is linked to its Proxmox node
 through the "Proxmox VM Host" relationship (Device → VirtualMachine).
@@ -113,6 +121,8 @@ The sync is idempotent. Each run brings Nautobot in line with Proxmox:
 - **Resource values are rounded down.** Memory is stored in whole MB and disk in whole GB, so very
   small values may display as `0`.
 - **Token authentication only.** Username/password login is not supported.
+- **VLAN-aware bridges aren't read.** The `bridge_vids` of VLAN-aware node bridges aren't synced as
+  tagged VLANs; only VM/container `tag=`/`trunks=` and node `vlan` interfaces are.
 - **Names must not collide across instances.** Nautobot requires Virtual Machine names to be unique
   within a cluster and node Device names to be unique within a location. If two Proxmox VE instances
   report the same name in the same cluster or location, the second config's create fails (logged in

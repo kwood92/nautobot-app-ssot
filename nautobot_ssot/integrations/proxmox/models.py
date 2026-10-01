@@ -105,6 +105,22 @@ class SSOTProxmoxConfig(PrimaryModel):  # pylint: disable=too-many-ancestors
         verbose_name="Sync Proxmox VE Tags",
         help_text="Enable syncing of Proxmox VE tags on VMs to Nautobot VMs as Tags.",
     )
+    sync_vlans = models.BooleanField(
+        default=True,
+        verbose_name="Sync VLANs",
+        help_text="Sync VLANs from VM/container interface tag/trunks settings and node VLAN interfaces, "
+        "and set interface modes and VLANs. When off, interface VLANs in Nautobot are left untouched.",
+    )
+    vlan_group = models.ForeignKey(
+        to="ipam.VLANGroup",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        verbose_name="VLAN Group",
+        help_text="VLAN Group for VLANs synced by this config. Leave empty to use a group named after this "
+        "config, created on the first sync. Keep configs in separate groups so reused VLAN IDs stay apart.",
+    )
     default_ssot_tag = models.ForeignKey(
         to="extras.Tag",
         on_delete=models.SET_NULL,
