@@ -17,6 +17,7 @@ The sync calls these read-only REST endpoints (plus the QEMU guest agent and LXC
 | `/nodes/{node}/status` | Node PVE version, CPU count, memory |
 | `/nodes/{node}/network` | Node network interfaces and their IPs |
 | QEMU guest agent | IP addresses of running QEMU VMs (agent must be installed and the VM powered on) |
+| QEMU cloud-init settings (`ipconfigN`) | Static IP addresses of QEMU VMs, for interfaces the agent reports none for |
 | LXC container config | IP addresses of LXC containers |
 
 ## What is created / updated in Nautobot
@@ -90,9 +91,13 @@ The sync is idempotent. Each run brings Nautobot in line with Proxmox:
 ## Limitations
 
 - **One-way sync.** Data flows from Proxmox VE to Nautobot only.
-- **QEMU VM IPs require the guest agent.** QEMU VM IP addresses come from the QEMU guest agent, so
-  they are only reported for running VMs with the agent installed. VMs without a reachable agent are
-  synced without IPs. LXC container IPs come from the container config and do not need an agent.
+- **QEMU VM IPs come from the guest agent, then cloud-init.** The guest agent's addresses are used
+  when it reports any for an interface (running VM, agent installed, token allowed to read it).
+  Otherwise the interface's cloud-init setting is used (`ipconfig0` for `net0`): only static
+  `ip=`/`ip6=` addresses, not `dhcp` or `auto`. Cloud-init addresses are the configured ones applied at
+  boot, so a change made inside the guest isn't seen unless the agent is readable. VMs with neither
+  sync without IPs. Only the addresses are read from the cloud-init settings, never the user, password
+  or SSH keys. LXC container IPs come from the container config and do not need an agent.
 - **Some objects are not deleted.** `Prefix`, `IPAddress`, `Device` (nodes), `Cluster`,
   `ClusterGroup`, and `Tag` remain in Nautobot after they are removed from Proxmox and must be cleaned up
   manually.

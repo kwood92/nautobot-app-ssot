@@ -81,8 +81,9 @@ than the sync needs.
 !!! warning "Proxmox VE 8 and `VM.Monitor`"
     On PVE 8, reading the guest agent's interfaces needs `VM.Monitor`, which also allows guest agent
     `exec`, `file-read`, `file-write` and `set-user-password`: in effect, root inside every guest. Don't
-    grant it to this token. Without it, QEMU VMs sync without IP addresses; LXC container IPs come from
-    the container config and are unaffected.
+    grant it to this token. Without it, QEMU VMs get only the static addresses from their cloud-init
+    settings (`ipconfigN`), which need just `VM.Audit`; VMs using DHCP sync without IPs. LXC container
+    IPs come from the container config and are unaffected.
 
 Nautobot stores both values as [Secrets][nb-secret], grouped in a [Secrets Group][nb-secretsgroup]
 that is attached to an [External Integration][nb-extint] for the Proxmox host.

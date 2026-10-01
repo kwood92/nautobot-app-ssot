@@ -4,6 +4,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from diffsync.exceptions import ObjectNotFound
+
 from nautobot_ssot.integrations.proxmox.diffsync.adapters.adapter_proxmox import (
     ProxmoxDiffSync,
     bytes_to_gb,
@@ -301,6 +303,102 @@ class TestProxmoxAdapter(unittest.TestCase):
         adapter.load_clusters()
         self.assertEqual(adapter.cluster_name, config.default_cluster_name)
         self.assertIsNotNone(adapter.get("cluster", config.default_cluster_name))
+
+
+class TestProxmoxAdapterCloudInit(unittest.TestCase):
+    """QEMU VM addresses from Proxmox VE cloud-init settings (``ipconfigN``)."""
+
+    def _load(self, qemu_config, agent_interfaces=None):
+        """Load an adapter whose only VM is the QEMU VM ``web01`` with the given config.
+
+        Args:
+            qemu_config (dict): The QEMU VM config returned by the client.
+            agent_interfaces (list): Guest agent interfaces; empty means the agent is unavailable.
+
+        Returns:
+            ProxmoxDiffSync: The loaded adapter.
+        """
+        client = MagicMock()
+        client.get_cluster_status.return_value = json_fixture(f"{real_path}/cluster_status.json")
+        client.get_nodes.return_value = json_fixture(f"{real_path}/nodes.json")
+        client.get_resources.return_value = [json_fixture(f"{real_path}/resources_vm.json")[0]]
+        client.get_qemu_config.return_value = qemu_config
+        client.get_qemu_agent_interfaces.return_value = agent_interfaces or []
+        client.get_node_network.return_value = []
+        client.get_node_status.return_value = {}
+        adapter = ProxmoxDiffSync(
+            job=MagicMock(), sync=MagicMock(), client=client, config=_default_config(), cluster_filters=None
+        )
+        adapter.load()
+        return adapter
+
+    def test_cloudinit_address_used_without_agent(self):
+        """With no guest agent data, ipconfig0's address is put on net0 and used as the primary IPv4."""
+        adapter = self._load(
+            {"net0": "virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0", "ipconfig0": "ip=10.0.10.60/24,gw=10.0.10.1"}
+        )
+
+        ip = adapter.get("ip_address", "10.0.10.60__24__Active")
+        self.assertEqual(ip.vm_interfaces, [{"name": "net0", "virtual_machine__name": "web01"}])
+        vm = adapter.get("virtual_machine", {"name": "web01", "cluster__name": "pve-cluster"})
+        self.assertEqual(vm.primary_ip4__host, "10.0.10.60")
+
+    def test_agent_addresses_take_precedence(self):
+        """When the guest agent reports addresses for an interface, ipconfigN isn't used for it."""
+        adapter = self._load(
+            {"net0": "virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0", "ipconfig0": "ip=10.0.10.60/24"},
+            agent_interfaces=json_fixture(f"{real_path}/qemu_agent_interfaces.json"),
+        )
+
+        self.assertTrue(adapter.get("ip_address", "10.0.10.50__24__Active"))
+        with self.assertRaises(ObjectNotFound):
+            adapter.get("ip_address", "10.0.10.60__24__Active")
+
+    def test_ipconfig_maps_to_matching_net_index(self):
+        """ipconfig1 belongs to net1; an ipconfigN without a netN is ignored."""
+        adapter = self._load(
+            {
+                "net0": "virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0",
+                "net1": "virtio=AA:BB:CC:DD:EE:03,bridge=vmbr1",
+                "ipconfig1": "ip=192.0.2.10/24",
+                "ipconfig5": "ip=198.51.100.10/24",
+            }
+        )
+
+        ip = adapter.get("ip_address", "192.0.2.10__24__Active")
+        self.assertEqual(ip.vm_interfaces, [{"name": "net1", "virtual_machine__name": "web01"}])
+        with self.assertRaises(ObjectNotFound):
+            adapter.get("ip_address", "198.51.100.10__24__Active")
+
+    def test_dynamic_settings_record_nothing_and_static_ipv6_is_recorded(self):
+        """ip=dhcp and ip6=auto give no address; a static ip6 is recorded."""
+        adapter = self._load(
+            {
+                "net0": "virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0",
+                "net1": "virtio=AA:BB:CC:DD:EE:03,bridge=vmbr1",
+                "ipconfig0": "ip=dhcp,ip6=auto",
+                "ipconfig1": "ip6=2001:db8::10/64",
+            }
+        )
+
+        self.assertEqual([ip.host for ip in adapter.get_all("ip_address")], ["2001:db8::10"])
+
+    def test_cloudinit_credentials_are_never_read(self):
+        """ciuser, cipassword and sshkeys from the same config never reach synced data or the job log."""
+        secrets = ("ci-user-marker", "ci-password-marker", "ssh-key-marker")
+        adapter = self._load(
+            {
+                "net0": "virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0",
+                "ipconfig0": "ip=10.0.10.60/24",
+                "ciuser": secrets[0],
+                "cipassword": secrets[1],
+                "sshkeys": secrets[2],
+            }
+        )
+
+        synced = repr(adapter.dict()) + repr(adapter.job.mock_calls)
+        for value in secrets:
+            self.assertNotIn(value, synced)
 
 
 class TestProxmoxHelpers(unittest.TestCase):

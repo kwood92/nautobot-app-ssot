@@ -1,0 +1,1 @@
+Proxmox VE: QEMU VMs now get static IP addresses from their cloud-init ipconfigN settings when the guest agent reports none, which needs only VM.Audit.

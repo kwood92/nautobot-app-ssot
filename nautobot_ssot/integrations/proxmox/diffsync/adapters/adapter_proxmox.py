@@ -68,6 +68,28 @@ def parse_net_config(net_string: str) -> Dict[str, str]:
     return parts
 
 
+def static_ip_pairs(parts: Dict[str, str]) -> List[Tuple[str, int]]:
+    """Return the statically configured addresses from parsed ``ip=``/``ip6=`` settings.
+
+    Used for LXC ``netN`` and QEMU cloud-init ``ipconfigN`` values. ``dhcp``, ``auto``, ``manual``
+    and values without a prefix length yield nothing.
+
+    Args:
+        parts (dict): The parsed key/value pairs from :func:`parse_net_config`.
+
+    Returns:
+        List[Tuple[str, int]]: ``(host, prefix_length)`` pairs.
+    """
+    pairs = []
+    for ip_key in ("ip", "ip6"):
+        cidr = parts.get(ip_key)
+        if not cidr or cidr in ("dhcp", "manual", "auto") or "/" not in cidr:
+            continue
+        host, _, prefix_length = cidr.partition("/")
+        pairs.append((host, int(prefix_length)))
+    return pairs
+
+
 def mac_from_net_parts(parts: Dict[str, str]) -> Optional[str]:
     """Return the MAC address from parsed ``netN`` parts (QEMU ``<model>=`` or LXC ``hwaddr=``).
 
@@ -445,6 +467,9 @@ class ProxmoxDiffSync(Adapter):
     ) -> None:
         """Load QEMU VM interfaces from config, with IPs from the guest agent matched by MAC.
 
+        Interfaces the agent reports no addresses for (VM stopped, no agent, or no permission to read
+        it) fall back to the matching cloud-init ``ipconfigN`` setting (``ipconfig0`` for ``net0``).
+
         Args:
             vm_config (dict): The VM's Proxmox QEMU config, as returned by the client.
             agent_interfaces (List[dict]): Interfaces reported by the QEMU guest agent.
@@ -458,10 +483,15 @@ class ProxmoxDiffSync(Adapter):
 
         def qemu_ip_pairs(key, parts, mac):  # pylint: disable=unused-argument
             agent_iface = agent_by_mac.get(mac.lower()) if mac else None
-            if not agent_iface:
-                return
-            for ip_entry in agent_iface.get("ip-addresses", []) or []:
-                yield ip_entry.get("ip-address"), ip_entry.get("prefix")
+            agent_pairs = [
+                (ip_entry.get("ip-address"), ip_entry.get("prefix"))
+                for ip_entry in (agent_iface or {}).get("ip-addresses", []) or []
+            ]
+            if agent_pairs:
+                return agent_pairs
+            # Only the addresses are read from ipconfigN; the config's ciuser/cipassword/sshkeys never are.
+            cloudinit = vm_config.get(f"ipconfig{key[len('net'):]}")
+            return static_ip_pairs(parse_net_config(cloudinit)) if isinstance(cloudinit, str) else []
 
         self._load_vm_interfaces_from_config(
             vm_config, diffsync_vm, get_name=lambda key, parts: key, get_ip_pairs=qemu_ip_pairs
@@ -476,12 +506,7 @@ class ProxmoxDiffSync(Adapter):
         """
 
         def lxc_ip_pairs(key, parts, mac):  # pylint: disable=unused-argument
-            for ip_key in ("ip", "ip6"):
-                cidr = parts.get(ip_key)
-                if not cidr or cidr in ("dhcp", "manual", "auto") or "/" not in cidr:
-                    continue
-                host, _, prefix_length = cidr.partition("/")
-                yield host, int(prefix_length)
+            return static_ip_pairs(parts)
 
         self._load_vm_interfaces_from_config(
             vm_config,
