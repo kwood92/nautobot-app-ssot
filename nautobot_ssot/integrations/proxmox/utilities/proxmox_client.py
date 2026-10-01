@@ -45,6 +45,8 @@ class ProxmoxConfig:  # pylint: disable=too-many-instance-attributes
     sync_nodes_as_devices: bool
     sync_proxmox_tags: bool
     debug: bool
+    # Seconds per request; ExternalIntegration.timeout, whose default is also 30.
+    timeout: int = 30
 
 
 class ProxmoxClient:
@@ -75,6 +77,7 @@ class ProxmoxClient:
             token_value=config.token_secret,
             verify_ssl=config.verify_ssl,
             service="PVE",
+            timeout=config.timeout,
         )
         self._authenticate()
 
