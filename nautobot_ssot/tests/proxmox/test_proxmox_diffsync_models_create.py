@@ -180,3 +180,15 @@ class TestProxmoxDiffSyncModelsCreate(ProxmoxSyncTestMixin, TestCase):
         nb_tag = Tag.objects.get(name="custom-tag")
         self.assertEqual(nb_tag.description, "A custom tag")
         self.assertIn(ContentType.objects.get_for_model(VirtualMachine), nb_tag.content_types.all())
+
+    def test_multiple_new_tags_in_one_sync(self):
+        """Several new source Tags in one sync are all created without the sync aborting."""
+        self._seed_cluster(self.source)
+        for name in ("tag-one", "tag-two", "tag-three"):
+            self.source.add(self.source.tag(name=name, description=""))
+        target = self._nb_adapter()
+        self.source.sync_to(target)
+
+        for name in ("tag-one", "tag-two", "tag-three"):
+            self.assertTrue(Tag.objects.filter(name=name).exists())
+            self.assertEqual(target.get("tag", name).name, name)

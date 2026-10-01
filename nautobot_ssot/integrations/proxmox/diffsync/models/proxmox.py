@@ -3,7 +3,6 @@
 import random
 from typing import Annotated, List, Optional
 
-from diffsync import DiffSyncModel
 from diffsync.enum import DiffSyncModelFlags
 from django.contrib.contenttypes.models import ContentType
 from nautobot.core.choices import ColorChoices
@@ -489,7 +488,7 @@ class TagModel(ProxmoxModelDiffSync):
         _new_tag.validated_save()
         _new_tag.content_types.set([ContentType.objects.get_for_model(VirtualMachine)])
         _new_tag.validated_save()
-        return DiffSyncModel.create(adapter=adapter, ids=ids, attrs=attrs)
+        return super(NautobotModel, cls).create(adapter=adapter, ids=ids, attrs=attrs)
 
     def update(self, attrs):
         """Update a Tag in Nautobot.

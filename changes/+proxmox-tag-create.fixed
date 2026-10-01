@@ -1,0 +1,1 @@
+Fixed the Proxmox VE sync aborting with ObjectAlreadyExists when more than one new tag is created in a single run.
