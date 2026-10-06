@@ -363,7 +363,9 @@ class ProxmoxDiffSync(Adapter):
                 self.job.log_debug(message=f"Skipping template {resource.get('name')}.")
                 continue
 
-            name = resource.get("name") or f"{resource_type}-{resource.get('vmid')}"
+            # Proxmox allows duplicate names; only the VM ID is unique in a cluster.
+            vmid = resource.get("vmid")
+            name = f"{resource['name']} ({vmid})" if resource.get("name") else f"{resource_type}-{vmid}"
             node = resource.get("node")
             status_key = resource.get("status", "stopped")
             status_name = self.config.default_vm_status_map.get(status_key)

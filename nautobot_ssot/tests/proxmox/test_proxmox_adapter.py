@@ -156,7 +156,7 @@ class TestProxmoxAdapter(unittest.TestCase):
         adapter.load()
 
         adapter.get("tag", "Synced From My PVE")
-        vm = adapter.get("virtual_machine", {"name": "web01", "cluster__name": "pve-cluster"})
+        vm = adapter.get("virtual_machine", {"name": "web01 (100)", "cluster__name": "pve-cluster"})
         tag_names = [t["name"] for t in vm.tags]
         self.assertIn("Synced From My PVE", tag_names)
         self.assertNotIn("SSoT Synced from Proxmox", tag_names)
@@ -217,7 +217,7 @@ class TestProxmoxAdapter(unittest.TestCase):
 
     def test_qemu_vm_loaded(self):
         """A QEMU VM is loaded with its resources, host, tags and primary IP."""
-        vm = self.adapter.get("virtual_machine", {"name": "web01", "cluster__name": "pve-cluster"})
+        vm = self.adapter.get("virtual_machine", {"name": "web01 (100)", "cluster__name": "pve-cluster"})
         self.assertEqual(vm.vcpus, 4)
         self.assertEqual(vm.memory, 4096)  # 4 GiB -> MB
         self.assertEqual(vm.disk, 32)  # 32 GiB
@@ -233,7 +233,7 @@ class TestProxmoxAdapter(unittest.TestCase):
 
     def test_lxc_vm_loaded(self):
         """An LXC container is loaded with its resources, host and primary IP."""
-        vm = self.adapter.get("virtual_machine", {"name": "ct-dns", "cluster__name": "pve-cluster"})
+        vm = self.adapter.get("virtual_machine", {"name": "ct-dns (200)", "cluster__name": "pve-cluster"})
         self.assertEqual(vm.vcpus, 1)
         self.assertEqual(vm.memory, 512)
         self.assertEqual(vm.disk, 8)
@@ -242,18 +242,18 @@ class TestProxmoxAdapter(unittest.TestCase):
 
     def test_qemu_interface_and_ip(self):
         """A QEMU interface and its guest-agent IP are loaded; link-local IPv6 is skipped."""
-        interface = self.adapter.get("interface", {"name": "net0", "virtual_machine__name": "web01"})
+        interface = self.adapter.get("interface", {"name": "net0", "virtual_machine__name": "web01 (100)"})
         self.assertEqual(interface.mac_address, "AA:BB:CC:DD:EE:01")
         ip = self.adapter.get("ip_address", "10.0.10.50__24__Active")
         self.assertEqual(ip.host, "10.0.10.50")
         self.assertEqual(ip.mask_length, 24)
-        self.assertEqual(ip.vm_interfaces, [{"name": "net0", "virtual_machine__name": "web01"}])
+        self.assertEqual(ip.vm_interfaces, [{"name": "net0", "virtual_machine__name": "web01 (100)"}])
         with self.assertRaises(Exception):  # diffsync ObjectNotFound
             self.adapter.get("ip_address", "fe80::a8bb:ccff:fedd:ee01__64__Active")
 
     def test_lxc_interface_and_ip_from_config(self):
         """An LXC interface, IP and Prefix are loaded from the container config."""
-        interface = self.adapter.get("interface", {"name": "eth0", "virtual_machine__name": "ct-dns"})
+        interface = self.adapter.get("interface", {"name": "eth0", "virtual_machine__name": "ct-dns (200)"})
         self.assertEqual(interface.mac_address, "AA:BB:CC:DD:EE:02")
         ip = self.adapter.get("ip_address", "10.0.20.10__24__Active")
         self.assertEqual(ip.mask_length, 24)
@@ -286,8 +286,8 @@ class TestProxmoxAdapter(unittest.TestCase):
         names = [vm.name for vm in adapter.get_all("virtual_machine")]
         self.assertNotIn("weird-vm", names)
 
-    def test_load_virtual_machines_skips_duplicate_name(self):
-        """Only the first of two same-named VMs in a cluster is loaded."""
+    def test_load_virtual_machines_same_name_keeps_both(self):
+        """Two same-named VMs in a cluster both load, told apart by their VM IDs."""
         self.client.get_resources.return_value = [
             {
                 "vmid": 101,
@@ -320,9 +320,37 @@ class TestProxmoxAdapter(unittest.TestCase):
             cluster_filters=None,
         )
         adapter.load()
-        dup_vms = [vm for vm in adapter.get_all("virtual_machine") if vm.name == "dup-vm"]
-        self.assertEqual(len(dup_vms), 1)
-        self.assertEqual(dup_vms[0].vcpus, 1)
+        first = adapter.get("virtual_machine", {"name": "dup-vm (101)", "cluster__name": "pve-cluster"})
+        second = adapter.get("virtual_machine", {"name": "dup-vm (102)", "cluster__name": "pve-cluster"})
+        self.assertEqual(first.vcpus, 1)
+        self.assertEqual(second.vcpus, 2)
+        adapter.get("interface", {"name": "net0", "virtual_machine__name": "dup-vm (101)"})
+        adapter.get("interface", {"name": "net0", "virtual_machine__name": "dup-vm (102)"})
+
+    def test_load_virtual_machines_unnamed_vm_uses_plain_fallback(self):
+        """A VM with no name is named after its type and VM ID, without a second VM ID."""
+        self.client.get_resources.return_value = [
+            {
+                "vmid": 103,
+                "type": "qemu",
+                "node": "pve1",
+                "status": "running",
+                "maxcpu": 1,
+                "maxmem": 1073741824,
+                "maxdisk": 1073741824,
+                "template": 0,
+            },
+        ]
+        adapter = ProxmoxDiffSync(
+            job=MagicMock(),
+            sync=MagicMock(),
+            client=self.client,
+            config=_default_config(),
+            cluster_filters=None,
+        )
+        adapter.load()
+        names = [vm.name for vm in adapter.get_all("virtual_machine")]
+        self.assertEqual(names, ["qemu-103"])
 
     def test_load_clusters_use_clusters_false_uses_default_cluster_name(self):
         """With use_clusters disabled, the default cluster name is used."""
@@ -349,7 +377,7 @@ class TestProxmoxAdapterVLANs(unittest.TestCase):
 
     def test_qemu_tag_gives_access_mode_and_untagged_vlan(self):
         """A QEMU netN with tag=10 is an access interface on VLAN 10 in the config's VLAN group."""
-        interface = self.adapter.get("interface", {"name": "net0", "virtual_machine__name": "web01"})
+        interface = self.adapter.get("interface", {"name": "net0", "virtual_machine__name": "web01 (100)"})
         self.assertEqual(interface.mode, "access")
         self.assertEqual(interface.untagged_vlan__vid, 10)
         self.assertEqual(interface.untagged_vlan__vlan_group__name, "Proxmox Test Config")
@@ -359,7 +387,7 @@ class TestProxmoxAdapterVLANs(unittest.TestCase):
         """trunks=20;30 with tag=10 is a tagged interface: VLANs 20 and 30 tagged, 10 untagged."""
         adapter = _load_single_qemu_vm({"net0": "virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0,tag=10,trunks=20;30"})
 
-        interface = adapter.get("interface", {"name": "net0", "virtual_machine__name": "web01"})
+        interface = adapter.get("interface", {"name": "net0", "virtual_machine__name": "web01 (100)"})
         self.assertEqual(interface.mode, "tagged")
         self.assertEqual(interface.untagged_vlan__vid, 10)
         self.assertEqual(
@@ -380,7 +408,7 @@ class TestProxmoxAdapterVLANs(unittest.TestCase):
         )
         adapter.load()
 
-        interface = adapter.get("interface", {"name": "eth0", "virtual_machine__name": "ct-dns"})
+        interface = adapter.get("interface", {"name": "eth0", "virtual_machine__name": "ct-dns (200)"})
         self.assertEqual((interface.mode, interface.untagged_vlan__vid), ("access", 40))
 
     def test_sync_vlans_off_records_no_vlans(self):
@@ -391,7 +419,7 @@ class TestProxmoxAdapterVLANs(unittest.TestCase):
             {"net0": "virtio=AA:BB:CC:DD:EE:01,bridge=vmbr0,tag=10,trunks=20"}, config=config
         )
 
-        interface = adapter.get("interface", {"name": "net0", "virtual_machine__name": "web01"})
+        interface = adapter.get("interface", {"name": "net0", "virtual_machine__name": "web01 (100)"})
         self.assertEqual((interface.mode, interface.untagged_vlan__vid, interface.tagged_vlans), ("", None, []))
         self.assertEqual(adapter.get_all("vlan"), [])
         self.assertEqual(adapter.get_all("vlangroup"), [])
@@ -437,8 +465,8 @@ class TestProxmoxAdapterCloudInit(unittest.TestCase):
         )
 
         ip = adapter.get("ip_address", "10.0.10.60__24__Active")
-        self.assertEqual(ip.vm_interfaces, [{"name": "net0", "virtual_machine__name": "web01"}])
-        vm = adapter.get("virtual_machine", {"name": "web01", "cluster__name": "pve-cluster"})
+        self.assertEqual(ip.vm_interfaces, [{"name": "net0", "virtual_machine__name": "web01 (100)"}])
+        vm = adapter.get("virtual_machine", {"name": "web01 (100)", "cluster__name": "pve-cluster"})
         self.assertEqual(vm.primary_ip4__host, "10.0.10.60")
 
     def test_agent_addresses_take_precedence(self):
@@ -464,7 +492,7 @@ class TestProxmoxAdapterCloudInit(unittest.TestCase):
         )
 
         ip = adapter.get("ip_address", "192.0.2.10__24__Active")
-        self.assertEqual(ip.vm_interfaces, [{"name": "net1", "virtual_machine__name": "web01"}])
+        self.assertEqual(ip.vm_interfaces, [{"name": "net1", "virtual_machine__name": "web01 (100)"}])
         with self.assertRaises(ObjectNotFound):
             adapter.get("ip_address", "198.51.100.10__24__Active")
 

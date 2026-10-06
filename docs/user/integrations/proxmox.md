@@ -106,6 +106,10 @@ The sync is idempotent. Each run brings Nautobot in line with Proxmox:
   boot, so a change made inside the guest isn't seen unless the agent is readable. VMs with neither
   sync without IPs. Only the addresses are read from the cloud-init settings, never the user, password
   or SSH keys. LXC container IPs come from the container config and do not need an agent.
+- **Virtual Machine names include the VM ID.** Proxmox VE allows several VMs or containers with the
+  same name in a cluster, so each is synced as `name (vmid)`, e.g. `web01 (100)`. A VM with no name is
+  synced as `qemu-<vmid>` or `lxc-<vmid>`. Renaming a VM in Proxmox VE replaces its Nautobot Virtual
+  Machine rather than renaming it.
 - **Some objects are not deleted.** `Prefix`, `IPAddress`, `Device` (nodes), `Cluster`,
   `ClusterGroup`, and `Tag` remain in Nautobot after they are removed from Proxmox and must be cleaned up
   manually.

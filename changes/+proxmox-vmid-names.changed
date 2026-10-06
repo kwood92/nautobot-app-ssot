@@ -1,0 +1,1 @@
+Proxmox VE: Virtual Machines are now named `name (vmid)`, so VMs and containers that share a name in a cluster are all synced instead of only the first.
